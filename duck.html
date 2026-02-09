@@ -538,12 +538,17 @@
     const otherPlayers = new Map(); // id -> { x, y, z, yaw, pitch, heldId, holdDistance, holdHeight }
     const otherPlayerMeshes = new Map(); // id -> THREE.Group (duck mesh)
     const objectHeldBy = new Map(); // objectId -> playerId (for objects held by others)
+    let heldPlayerId = null;       // when we're holding another player
+    let grabbedBy = null;          // id of player holding us
+    let lastGrabbedPosition = null;
 
-    function createOtherPlayerDuck(color = 0x7dd3fc) {
+    function createOtherPlayerDuck(id, color = 0x7dd3fc) {
       const group = new THREE.Group();
       const model = cloneDuckModel(color);
       if (model) group.add(model);
+      group.userData.otherPlayerId = id;
       scene.add(group);
+      interactables.push(group);
       return group;
     }
 
@@ -555,7 +560,7 @@
         for (const [id, p] of Object.entries(data.players)) {
           if (id === myId) continue;
           otherPlayers.set(id, p);
-          const mesh = createOtherPlayerDuck(p.color);
+          const mesh = createOtherPlayerDuck(id, p.color);
           mesh.position.set(p.x, p.y, p.z);
           mesh.rotation.y = p.yaw;
           otherPlayerMeshes.set(id, mesh);
@@ -571,15 +576,18 @@
       });
       socket.on("playerJoined", (p) => {
         otherPlayers.set(p.id, p);
-        const mesh = createOtherPlayerDuck(p.color);
+        const mesh = createOtherPlayerDuck(p.id, p.color);
         mesh.position.set(p.x, p.y, p.z);
         otherPlayerMeshes.set(p.id, mesh);
       });
       socket.on("playerLeft", (id) => {
+        if (heldPlayerId === id) heldPlayerId = null;
         otherPlayers.delete(id);
         const mesh = otherPlayerMeshes.get(id);
         if (mesh) {
           scene.remove(mesh);
+          const i = interactables.indexOf(mesh);
+          if (i >= 0) interactables.splice(i, 1);
           otherPlayerMeshes.delete(id);
         }
         for (const [objId, pid] of objectHeldBy) {
@@ -611,6 +619,29 @@
       socket.on("drop", (data) => {
         objectHeldBy.delete(data.objectId);
       });
+      socket.on("playerGrabbed", (data) => {
+        if (data.grabbedId === myId) grabbedBy = data.grabberId;
+      });
+      socket.on("playerReleased", (data) => {
+        if (data.grabbedId === myId) grabbedBy = null;
+        if (data.grabberId === myId && data.grabbedId === heldPlayerId) heldPlayerId = null;
+      });
+      socket.on("grabbedPosition", (data) => {
+        lastGrabbedPosition = data;
+      });
+      socket.on("playerThrown", (data) => {
+        grabbedBy = null;
+        const { vx, vy, vz } = data;
+        launchVel.set(vx, 0, vz);
+        velY = vy;
+        grounded = false;
+      });
+      socket.on("hitBy", (data) => {
+        const { vx, vy, vz } = data;
+        launchVel.addScaledVector(new THREE.Vector3(vx, 0, vz), 1);
+        velY += vy;
+        grounded = false;
+      });
     }
 
     // Player movement
@@ -627,11 +658,15 @@
     const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
 
     function playerAABB(nextPos) {
-      // Rough AABB around duck
       const half = new THREE.Vector3(0.55, 1.1, 0.55);
       const min = nextPos.clone().sub(half);
       const max = nextPos.clone().add(half);
       return new THREE.Box3(min, max);
+    }
+
+    function otherPlayerAABB(pos) {
+      const half = new THREE.Vector3(0.55, 1.1, 0.55);
+      return new THREE.Box3(pos.clone().sub(half), pos.clone().add(half));
     }
 
     function resolvePlayerCollisions(nextPos) {
@@ -786,13 +821,12 @@
     let sparkleT = 0;
     let scrollFeedback = 0;  // pops when you scroll to adjust distance
     function updateSparkles(dt) {
-      if (!held) { sparkleGroup.visible = false; scrollFeedback = 0; return; }
+      if (!held && !heldPlayerId) { sparkleGroup.visible = false; scrollFeedback = 0; return; }
       sparkleGroup.visible = true;
 
       scrollFeedback = Math.max(0, scrollFeedback - dt * 5);
 
-      // Position at held object
-      sparkleGroup.position.copy(held.position);
+      sparkleGroup.position.copy(held ? held.position : focus.position);
 
       // Scale ring to object size
       const s = held.userData?.size;
@@ -919,6 +953,21 @@
     let chargingJump = false;
 
     function releaseThrow() {
+      if (heldPlayerId) {
+        playSfx("throw");
+        const frac = getChargeFraction();
+        const strength = CHARGE_MIN_STRENGTH + frac * (CHARGE_MAX_STRENGTH - CHARGE_MIN_STRENGTH);
+        const dir = forwardVector().clone();
+        const impulse = dir.multiplyScalar(strength);
+        if (socket) socket.emit("throwPlayer", { grabbedId: heldPlayerId, vx: impulse.x, vy: impulse.y, vz: impulse.z });
+        heldPlayerId = null;
+        focus.visible = false;
+        sparkleGroup.visible = false;
+        charging = false;
+        chargeBarEl.classList.remove("visible");
+        chargeFillEl.style.width = "0%";
+        return;
+      }
       if (!held) {
         charging = false;
         chargeBarEl.classList.remove("visible");
@@ -961,7 +1010,7 @@
       if (!pointerLocked) return;
 
       if (e.button === 0) { // left click — start charging throw or telekinetic jump
-        if (held) {
+        if (held || heldPlayerId) {
           charging = true;
           chargeStart = performance.now();
           chargeBarEl.classList.add("visible");
@@ -974,7 +1023,15 @@
         }
       }
       if (e.button === 2) { // right click drop
-        if (held) {
+        if (heldPlayerId) {
+          if (socket) socket.emit("releasePlayer");
+          heldPlayerId = null;
+          focus.visible = false;
+          sparkleGroup.visible = false;
+          charging = false;
+          chargeBarEl.classList.remove("visible");
+          chargeFillEl.style.width = "0%";
+        } else if (held) {
           const objectId = dynamic.indexOf(held);
           if (objectId >= 0 && socket) socket.emit("drop", objectId);
           releaseHeldNPC();
@@ -1000,8 +1057,7 @@
 
     document.addEventListener("wheel", (e) => {
       if (!pointerLocked) return;
-      if (held) {
-        // Scroll pulls/pushes object toward/away from player
+      if (held || heldPlayerId) {
         holdDistance += (e.deltaY < 0 ? 1 : -1) * 1.2;
         holdDistance = Math.max(2, Math.min(40, holdDistance));
         scrollFeedback = 0.3;
@@ -1014,46 +1070,64 @@
     // Hold E to grab
     function updateHolding() {
       holding = keys.has("KeyE");
-      if (!holding) return;
+      if (!holding) {
+        if (heldPlayerId && socket) socket.emit("releasePlayer");
+        heldPlayerId = null;
+        return;
+      }
 
-      if (!held) {
+      if (!held && !heldPlayerId) {
         const hit = getAimHit();
         if (hit && hit.object) {
           const obj = hit.object;
-          const npc = obj.userData.npc;
-          if (npc) {
-            // Grabbing an NPC — hold the group mesh
-            held = npc.mesh;
-            held.userData.vel = npc.vel;
-            held.userData.size = new THREE.Vector3(1.1, 1.5, 1.1);
-            held.userData.mass = 1.5;
-            held.userData.npc = npc;
-            npc.grabbed = true;
+          const otherId = obj.userData.otherPlayerId;
+          if (otherId && socket) {
+            heldPlayerId = otherId;
+            socket.emit("grabPlayer", otherId);
+            const p = otherPlayers.get(otherId);
+            if (p) {
+              holdDistance = Math.max(2, Math.min(40, new THREE.Vector3(p.x - duck.position.x, 0, p.z - duck.position.z).length()));
+              holdHeight = p.y + 2;
+            }
+            focus.visible = true;
+            playSfx("grab");
           } else {
-            held = obj;
+            const npc = obj.userData.npc;
+            if (npc) {
+              held = npc.mesh;
+              held.userData.vel = npc.vel;
+              held.userData.size = new THREE.Vector3(1.1, 1.5, 1.1);
+              held.userData.mass = 1.5;
+              held.userData.npc = npc;
+              npc.grabbed = true;
+            } else {
+              held = obj;
+            }
+            const objectId = dynamic.indexOf(held);
+            if (objectId >= 0 && socket) socket.emit("grab", objectId);
+            focus.visible = true;
+            const grabPos = held.parent === scene ? held.position : held.getWorldPosition(new THREE.Vector3());
+            const grabDist = grabPos.clone().sub(duck.position).length();
+            holdDistance = Math.max(2, Math.min(40, grabDist));
+            holdHeight = grabPos.y + 5;
+            held.userData.vel.y += 2.5;
+            playSfx("grab");
           }
-          const objectId = dynamic.indexOf(held);
-          if (objectId >= 0 && socket) socket.emit("grab", objectId);
-          focus.visible = true;
-          const grabPos = held.parent === scene ? held.position : held.getWorldPosition(new THREE.Vector3());
-          const grabDist = grabPos.clone().sub(duck.position).length();
-          holdDistance = Math.max(2, Math.min(40, grabDist));
-          holdHeight = grabPos.y + 5;
-          held.userData.vel.y += 2.5;
-          playSfx("grab");
         }
       }
     }
 
     // Pull held object toward target point in front of camera
     function applyTelekinesis(dt) {
-      if (!held) return;
-
-      // Target floats in front of the player at holdDistance, elevated by holdHeight
-      const origin = duck.position.clone();
       const flatForward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
-      const target = origin.add(flatForward.multiplyScalar(holdDistance));
+      const target = duck.position.clone().add(flatForward.multiplyScalar(holdDistance));
       target.y = holdHeight;
+
+      if (heldPlayerId) {
+        focus.position.copy(target).add(new THREE.Vector3(0, 0.6, 0));
+        return;
+      }
+      if (!held) return;
 
       // Rigid follow: lerp position directly, kill velocity
       const lerp = 1 - Math.pow(0.001, dt); // ~0.93 at 60fps — snappy but smooth
@@ -1466,6 +1540,9 @@
       chargingJump = false;
       releaseHeldNPC();
       held = null;
+      if (heldPlayerId && socket) socket.emit("releasePlayer");
+      heldPlayerId = null;
+      grabbedBy = null;
       focus.visible = false;
       sparkleGroup.visible = false;
 
@@ -1481,49 +1558,47 @@
       duck.rotation.y = yaw;
       camPivot.rotation.x = pitch;
 
-      // Input -> movement (relative to yaw)
-      // Forward should be -Z in camera space so W goes "into" the screen
-      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
-      const right   = new THREE.Vector3(forward.z, 0, -forward.x).normalize();
+      if (grabbedBy && lastGrabbedPosition) {
+        duck.position.set(lastGrabbedPosition.x, lastGrabbedPosition.y, lastGrabbedPosition.z);
+      } else {
+        // Input -> movement (relative to yaw)
+        const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+        const right   = new THREE.Vector3(forward.z, 0, -forward.x).normalize();
 
-      const sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
-      const speed = sprint ? 14.5 : 9.5;
+        const sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
+        const speed = sprint ? 14.5 : 9.5;
 
-      let move = new THREE.Vector3();
-      if (keys.has("KeyW")) move.add(forward);
-      if (keys.has("KeyS")) move.sub(forward);
-      if (keys.has("KeyA")) move.add(right);
-      if (keys.has("KeyD")) move.sub(right);
+        let move = new THREE.Vector3();
+        if (keys.has("KeyW")) move.add(forward);
+        if (keys.has("KeyS")) move.sub(forward);
+        if (keys.has("KeyA")) move.add(right);
+        if (keys.has("KeyD")) move.sub(right);
 
-      if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed * dt);
+        if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed * dt);
 
-      // Jump
-      if ((keys.has("Space")) && grounded) {
-        velY = 9.5;
-        grounded = false;
+        if ((keys.has("Space")) && grounded) {
+          velY = 9.5;
+          grounded = false;
+        }
+
+        velY -= GRAVITY * dt;
+
+        let nextPos = duck.position.clone().add(move);
+        nextPos.addScaledVector(launchVel, dt);
+        launchVel.multiplyScalar(Math.max(0, 1 - 4.5 * dt));
+        nextPos.y += velY * dt;
+
+        if (nextPos.y < 1.1) {
+          nextPos.y = 1.1;
+          velY = 0;
+          launchVel.multiplyScalar(0.3);
+          grounded = true;
+        }
+
+        nextPos = resolvePlayerCollisions(nextPos);
+
+        duck.position.copy(nextPos);
       }
-
-      // Gravity
-      velY -= GRAVITY * dt;
-
-      // Next position
-      let nextPos = duck.position.clone().add(move);
-      nextPos.addScaledVector(launchVel, dt);
-      launchVel.multiplyScalar(Math.max(0, 1 - 4.5 * dt));
-      nextPos.y += velY * dt;
-
-      // Floor
-      if (nextPos.y < 1.1) {
-        nextPos.y = 1.1;
-        velY = 0;
-        launchVel.multiplyScalar(0.3); // friction on landing
-        grounded = true;
-      }
-
-      // Collisions with buildings
-      nextPos = resolvePlayerCollisions(nextPos);
-
-      duck.position.copy(nextPos);
 
       // Walking waddle in 3rd person when moving (negated for coordinate convention)
       if (thirdPersonMode && duckModel) {
@@ -1540,6 +1615,7 @@
           x: duck.position.x, y: duck.position.y, z: duck.position.z,
           yaw, pitch, velY,
           heldId: held ? dynamic.indexOf(held) : null,
+          heldPlayerId: heldPlayerId || undefined,
           holdDistance, holdHeight,
         });
       }
@@ -1563,7 +1639,7 @@
       updateChargeJumpParticles(dt);
 
       // Update charge bar
-      if (charging && (held || chargingJump)) {
+      if (charging && (held || heldPlayerId || chargingJump)) {
         const frac = getChargeFraction();
         chargeFillEl.style.width = (frac * 100).toFixed(1) + "%";
       }
@@ -1615,6 +1691,39 @@
           knock.y = Math.max(knock.y, 3 + a.vel.length() * 0.15);
           b.vel.add(knock);
           a.vel.multiplyScalar(0.4);
+          break;
+        }
+      }
+
+      // PVP: thrown objects hit other players
+      for (const m of dynamic) {
+        const mSpeed = m.userData.vel.length();
+        if (mSpeed < 2) continue;
+        const mBox = meshAABB(m);
+        for (const [pid, p] of otherPlayers) {
+          if (pid === myId || (heldPlayerId === pid)) continue;
+          const oBox = otherPlayerAABB(new THREE.Vector3(p.x, p.y, p.z));
+          if (!aabbIntersects(mBox, oBox)) continue;
+          const knock = m.userData.vel.clone().multiplyScalar(0.7);
+          knock.y = Math.max(knock.y, 4 + mSpeed * 0.15);
+          if (socket) socket.emit("hitPlayer", { targetId: pid, vx: knock.x, vy: knock.y, vz: knock.z });
+          m.userData.vel.multiplyScalar(0.25);
+          break;
+        }
+      }
+
+      // PVP: thrown NPCs hit other players
+      for (const npc of npcDucks) {
+        if (npc.vel.length() < 5) continue;
+        const nBox = npcAABB(npc);
+        for (const [pid, p] of otherPlayers) {
+          if (pid === myId || (heldPlayerId === pid)) continue;
+          const oBox = otherPlayerAABB(new THREE.Vector3(p.x, p.y, p.z));
+          if (!aabbIntersects(nBox, oBox)) continue;
+          const knock = npc.vel.clone().multiplyScalar(0.6);
+          knock.y = Math.max(knock.y, 5 + npc.vel.length() * 0.2);
+          if (socket) socket.emit("hitPlayer", { targetId: pid, vx: knock.x, vy: knock.y, vz: knock.z });
+          npc.vel.multiplyScalar(0.35);
           break;
         }
       }

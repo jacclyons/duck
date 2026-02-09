@@ -73,6 +73,7 @@ io.on("connection", (socket) => {
     x: 0, y: 2, z: 18,
     yaw: 0, pitch: 0, velY: 0,
     heldId: null,
+    grabbedBy: null,
     color,
   });
 
@@ -109,6 +110,18 @@ io.on("connection", (socket) => {
     p.pitch = data.pitch;
     p.velY = data.velY ?? p.velY;
     socket.broadcast.emit("playerUpdate", { id, ...data });
+    // If this player is holding another, send grabbed position to the held player
+    if (data.heldPlayerId) {
+      const held = players.get(data.heldPlayerId);
+      if (held && held.grabbedBy === id) {
+        const forward = { x: -Math.sin(p.yaw), y: 0, z: -Math.cos(p.yaw) };
+        const dist = data.holdDistance ?? 6;
+        const height = data.holdHeight ?? 5;
+        const x = p.x + forward.x * dist;
+        const z = p.z + forward.z * dist;
+        io.to(data.heldPlayerId).emit("grabbedPosition", { x, y: height, z });
+      }
+    }
   });
 
   socket.on("grab", (objectId) => {
@@ -142,6 +155,39 @@ io.on("connection", (socket) => {
     io.emit("drop", { playerId: id, objectId });
   });
 
+  socket.on("grabPlayer", (grabbedId) => {
+    const grabber = players.get(id);
+    const grabbed = players.get(grabbedId);
+    if (!grabber || !grabbed || grabbed.grabbedBy) return;
+    grabbed.grabbedBy = id;
+    io.emit("playerGrabbed", { grabberId: id, grabbedId });
+  });
+
+  socket.on("releasePlayer", () => {
+    const grabber = players.get(id);
+    if (!grabber) return;
+    const grabbedId = [...players.entries()].find(([_, p]) => p.grabbedBy === id)?.[0];
+    if (!grabbedId) return;
+    players.get(grabbedId).grabbedBy = null;
+    io.emit("playerReleased", { grabberId: id, grabbedId });
+  });
+
+  socket.on("throwPlayer", (data) => {
+    const { grabbedId, vx, vy, vz } = data;
+    const grabber = players.get(id);
+    const grabbed = players.get(grabbedId);
+    if (!grabber || !grabbed || grabbed.grabbedBy !== id) return;
+    grabbed.grabbedBy = null;
+    io.to(grabbedId).emit("playerThrown", { vx, vy, vz });
+    io.emit("playerReleased", { grabberId: id, grabbedId });
+  });
+
+  socket.on("hitPlayer", (data) => {
+    const { targetId, vx, vy, vz } = data;
+    if (!players.has(targetId)) return;
+    io.to(targetId).emit("hitBy", { vx, vy, vz });
+  });
+
   socket.on("objectSync", (data) => {
     const obj = objects[data.id];
     if (!obj || obj.heldBy !== null) return;
@@ -162,6 +208,11 @@ io.on("connection", (socket) => {
         obj.heldBy = null;
         io.emit("drop", { playerId: id, objectId: p.heldId });
       }
+    }
+    const grabbedId = p ? [...players.entries()].find(([_, pl]) => pl.grabbedBy === id)?.[0] : null;
+    if (grabbedId) {
+      players.get(grabbedId).grabbedBy = null;
+      io.emit("playerReleased", { grabberId: id, grabbedId });
     }
     players.delete(id);
     io.emit("playerLeft", id);
