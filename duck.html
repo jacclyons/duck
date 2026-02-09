@@ -1,0 +1,1664 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>duck</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#0b1020; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #hud {
+      position: fixed; left: 12px; top: 12px; z-index: 10;
+      color: rgba(255,255,255,0.92);
+      background: #181818;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 10px 12px;
+      backdrop-filter: blur(6px);
+      max-width: 420px;
+      line-height: 1.25;
+      user-select: none;
+    }
+    #hud b { display:block; margin-bottom: 6px; }
+    #crosshair {
+      position: fixed; left:50%; top:50%; transform: translate(-50%, -50%);
+      width: 14px; height: 14px; z-index: 9; pointer-events:none;
+      opacity: 0.85;
+    }
+    #crosshair:before, #crosshair:after {
+      content:""; position:absolute; left:50%; top:50%;
+      background: rgba(255,255,255,0.9);
+      transform: translate(-50%, -50%);
+      border-radius: 2px;
+    }
+    #crosshair:before { width: 14px; height: 2px; }
+    #crosshair:after  { width: 2px; height: 14px; }
+    #chargeBar {
+      position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%);
+      width: 120px; height: 8px;
+      background: #181818;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      z-index: 10;
+      overflow: hidden;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    #chargeBar.visible { opacity: 1; }
+    #chargeFill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #476af5, #71cbfb, #44efbf);
+      border-radius: 6px;
+      transition: width 0.05s linear;
+    }
+    #hint {
+      position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+      color: rgba(255,255,255,0.9);
+      background: #181818;
+      border-radius: 1000px;
+      padding: 8px 14px;
+      z-index: 10;
+      user-select:none;
+      white-space: nowrap;
+    }
+    #menu {
+      position: fixed; inset: 0; z-index: 20;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #181818;
+      color: rgba(255,255,255,0.95);
+      text-align: center;
+      padding: 24px;
+    }
+    #menu.hidden { display: none; }
+    #menu .card {
+      max-width: 480px;
+      background: #181818;
+      border-radius: 20px;
+      padding: 32px 36px;
+      backdrop-filter: blur(12px);
+    }
+    #menu h1 { margin: 0 0 8px; font-size: 1.75rem; }
+    #menu .menu-logo { display: block; max-width: 100%; height: auto; max-height: 6rem; margin: 0 auto 12px; }
+    #menu .subtitle { opacity: 0.9; font-size: 0.95rem; margin-bottom: 28px; }
+    #menu .playBtn {
+      display: block; width: 100%;
+      border: 1px solid transparent; border-radius: 14px;
+      padding: 16px 24px;
+      background: #FFBE00;
+      color: #181818;
+      font-size: 1.15rem; font-weight: 700;
+      cursor: pointer;
+    }
+    #menu .playBtn:hover {
+      border-color: #FFBE00;
+    }
+    #menu .controls {
+      font-size: 0.85rem;
+      line-height: 1.8;
+      color: rgba(255,255,255,0.8);
+    }
+    #menu .controls kbd {
+      display: inline-block;
+      padding: 0.15em 0.45em;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.75em;
+      font-weight: 600;
+      line-height: 1;
+      color: rgba(255,255,255,0.95);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 0.35em;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.3);
+      margin: 0 0.1em;
+    }
+    #menu .controls .sep {
+      color: rgba(255,255,255,0.4);
+      margin: 0 0.35em;
+      font-weight: 400;
+    }
+    #menu .controls-dropdown {
+      margin-top: 16px;
+      overflow: hidden;
+    }
+    #menu .controls-dropdown summary {
+      padding: 10px 14px;
+      font-size: 0.9rem;
+      color: rgba(255,255,255,0.75);
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    #menu .controls-dropdown summary::-webkit-details-marker { display: none; }
+    #menu .controls-dropdown summary::after {
+      content: "▾";
+      float: right;
+      opacity: 0.6;
+      transition: transform 0.2s;
+    }
+    #menu .controls-dropdown[open] summary::after { transform: rotate(180deg); }
+    #menu .controls-dropdown .controls-inner {
+      padding: 12px 14px 14px;
+      background: #181818;
+    }
+    #menu .status { margin-top: 16px; font-size: 0.9rem; opacity: 0.8; }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+  <div id="menu">
+    <div class="card">
+      <img src="duck.svg" alt="duck" class="menu-logo" />
+      <button id="playBtn" class="playBtn">Play (Multiplayer)</button>
+      <button id="playOfflineBtn" class="playBtn" style="margin-top:10px; background:rgba(255,255,255,0.2); color:inherit;">Play Offline</button>
+      <details class="controls-dropdown">
+        <summary>Controls</summary>
+        <div class="controls-inner controls">
+          <kbd>WASD</kbd><span class="sep">•</span>  jump <kbd>Space</kbd><span class="sep">•</span> sprint<br/>
+          <kbd>E</kbd><span class="sep">•</span> grab <kbd>Wheel</kbd><span class="sep">•</span> pull/push <kbd>LMB</kbd><span class="sep">•</span> throw <kbd>RMB</kbd><span class="sep">•</span> drop <kbd>R</kbd><span class="sep">•</span> reset<br/>
+          <kbd>P</kbd><span class="sep">•</span> 3rd person <kbd>Look down</kbd><span class="sep">+</span><kbd>LMB</kbd><span class="sep">•</span> telekinetic jump (hold to charge)
+        </div>
+      </details>
+      <div id="menuStatus" class="status">Click Play to join the battle</div>
+    </div>
+  </div>
+
+  <div id="hud">
+    <b>Duckkinesis</b>
+    <div id="stats">Objects: 0 • Held: none • FPS: —</div>
+  </div>
+  <div id="crosshair"></div>
+  <div id="chargeBar"><div id="chargeFill"></div></div>
+  <div id="hint">Click to lock mouse • E to grab • Wheel to adjust distance • Hold LMB to charge throw</div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+    const SERVER_URL = window.location.origin;
+
+    // Duck model (loaded async)
+    let duckModelTemplate = null;
+    async function loadDuckModel() {
+      try {
+        const gltf = await new Promise((resolve, reject) => {
+          new GLTFLoader().load("duck_.glb", resolve, undefined, reject);
+        });
+        const model = gltf.scene;
+        model.traverse((o) => {
+          if (o.isMesh) {
+            o.castShadow = true;
+            o.receiveShadow = true;
+          }
+        });
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const scale = 1.2 / Math.max(size.x, size.y, size.z);
+        model.scale.setScalar(scale);
+        model.rotation.y = 0;  // GLB faces -Z by default; no flip needed
+        // Center model so pivot aligns with collision/grabbable bounds
+        const box2 = new THREE.Box3().setFromObject(model);
+        const center = box2.getCenter(new THREE.Vector3());
+        model.position.sub(center);
+        // Duck tail extends the bounding box; nudge pivot toward body so focus ring aligns
+        model.position.z += 0.2;
+        // Align model feet with ground (collision uses center at 1.1, feet at 0)
+        const modelHalfHeight = (box2.max.y - box2.min.y) * 0.5;
+        model.position.y -= (1.1 - modelHalfHeight);
+        model.rotation.y = Math.PI;  // Face -Z (forward) to match movement
+        duckModelTemplate = model;
+      } catch (err) {
+        console.warn("Could not load duck_.glb (run via server: npm start). Using fallback.", err);
+        duckModelTemplate = makeFallbackDuckModel();
+      }
+    }
+
+    function makeFallbackDuckModel() {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(
+        new THREE.SphereGeometry(0.55, 12, 10),
+        new THREE.MeshStandardMaterial({ color: 0xf5d547, roughness: 0.65 })
+      );
+      body.position.set(0, 0.55, 0);
+      body.rotation.y = Math.PI;
+      g.add(body);
+      const head = new THREE.Mesh(
+        new THREE.SphereGeometry(0.35, 12, 10),
+        new THREE.MeshStandardMaterial({ color: 0xf7dd61, roughness: 0.65 })
+      );
+      head.position.set(0, 1.1, 0.35);
+      head.rotation.y = Math.PI;
+      g.add(head);
+      const beak = new THREE.Mesh(
+        new THREE.BoxGeometry(0.28, 0.14, 0.28),
+        new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.7 })
+      );
+      beak.position.set(0, 1.02, 0.72);
+      beak.rotation.y = Math.PI;
+      g.add(beak);
+      g.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
+      return g;
+    }
+
+    function cloneDuckModel(color = null) {
+      if (!duckModelTemplate) return null;
+      const clone = duckModelTemplate.clone();
+      clone.traverse((o) => {
+        if (o.isMesh && o.material) {
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          o.material = mats.length === 1 ? mats[0].clone() : mats.map((m) => m.clone());
+          if (color) {
+            const toColor = (m) => { if (m.color) m.color.setHex(color); };
+            Array.isArray(o.material) ? o.material.forEach(toColor) : toColor(o.material);
+          }
+        }
+      });
+      return clone;
+    }
+
+    // ---------------------------
+    // SFX
+    // ---------------------------
+    const sfx = {};
+    ["grab", "throw", "shatter", "scream", "scream2"].forEach((name) => {
+      const a = new Audio(`sfx/${name}.mp3`);
+      a.volume = 0.7;
+      sfx[name] = a;
+    });
+
+    function playSfx(name) {
+      const a = sfx[name];
+      if (!a) return;
+      a.currentTime = 0;
+      a.play().catch(() => {});
+    }
+
+    // ---------------------------
+    // Basic setup
+    // ---------------------------
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x0b1020, 80, 260);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 3, 10);
+
+    // Lighting
+    const hemi = new THREE.HemisphereLight(0xbfd7ff, 0x1b2338, 0.9);
+    scene.add(hemi);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1.05);
+    sun.position.set(35, 60, 25);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 200;
+    sun.shadow.camera.left = -80;
+    sun.shadow.camera.right = 80;
+    sun.shadow.camera.top = 80;
+    sun.shadow.camera.bottom = -80;
+    scene.add(sun);
+
+    // ---------------------------
+    // Pointer lock + look
+    // ---------------------------
+    let pointerLocked = false;
+    let yaw = 0;
+    let pitch = 0;
+
+    const menu = document.getElementById("menu");
+    const playBtn = document.getElementById("playBtn");
+    const menuStatus = document.getElementById("menuStatus");
+
+    playBtn.addEventListener("click", async () => {
+      menuStatus.textContent = "Connecting...";
+      if (typeof io === "undefined") {
+        menuStatus.textContent = "Socket.io failed to load. Use: npm start";
+        return;
+      }
+      try {
+        socket = io(SERVER_URL);
+        setupSocket();
+        socket.on("connect", () => {
+          menuStatus.textContent = "Connected! Locking pointer...";
+          renderer.domElement.requestPointerLock();
+        });
+        socket.on("connect_error", () => {
+          menuStatus.textContent = "Could not connect. Run: npm start";
+        });
+      } catch (e) {
+        menuStatus.textContent = "Error: " + e.message;
+      }
+    });
+
+    document.getElementById("playOfflineBtn").addEventListener("click", () => {
+      menuStatus.textContent = "Playing offline...";
+      renderer.domElement.requestPointerLock();
+    });
+
+    document.addEventListener("pointerlockchange", () => {
+      pointerLocked = (document.pointerLockElement === renderer.domElement);
+      menu.classList.toggle("hidden", pointerLocked);
+    });
+
+    let duck = null;
+    let camPivot = null;
+
+    document.addEventListener("mousemove", (e) => {
+      if (!pointerLocked) return;
+      const sensitivity = 0.004;
+      yaw   -= e.movementX * sensitivity;
+      pitch -= e.movementY * sensitivity;
+      pitch = Math.max(-1.45, Math.min(1.45, pitch));
+      if (duck && camPivot) {
+        duck.rotation.y = yaw;
+        camPivot.rotation.x = pitch;
+      }
+    });
+
+    // ---------------------------
+    // "Physics-lite" rigid bodies
+    // ---------------------------
+    const GRAVITY = 28;  // units/s^2
+    const DAMPING = 0.985;
+    const FLOOR_Y = 0;
+
+    const dynamic = []; // objects with velocity
+    const colliders = []; // static AABBs: {min,max}
+    const buildings = []; // { mesh, box } — parallel to colliders for buildings
+    const interactables = []; // dynamic targets for telekinesis
+
+    function makeAABBFromMesh(mesh) {
+      const box = new THREE.Box3().setFromObject(mesh);
+      return box;
+    }
+
+    function addStaticCollider(mesh, isBuilding = false) {
+      const box = makeAABBFromMesh(mesh);
+      colliders.push(box);
+      if (isBuilding) buildings.push({ mesh, box, destroyed: false });
+    }
+
+    // Simple AABB check for player vs walls/buildings
+    function aabbIntersects(a, b) {
+      return (a.min.x <= b.max.x && a.max.x >= b.min.x) &&
+             (a.min.y <= b.max.y && a.max.y >= b.min.y) &&
+             (a.min.z <= b.max.z && a.max.z >= b.min.z);
+    }
+
+    // ---------------------------
+    // City map generation
+    // ---------------------------
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(500, 500),
+      new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.95, metalness: 0.0 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Roads (grid)
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.95 });
+    const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.9 });
+
+    function addRoad(x, z, w, d) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.2, d), roadMat);
+      m.position.set(x, 0.1, z);
+      m.receiveShadow = true;
+      scene.add(m);
+    }
+    function addSidewalk(x, z, w, d) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.35, d), sidewalkMat);
+      m.position.set(x, 0.175, z);
+      m.receiveShadow = true;
+      scene.add(m);
+    }
+
+    // City blocks
+    const BLOCKS = 7;
+    const SPACING = 28;
+    const ROAD = 10;
+
+    // roads between blocks
+    for (let i = -BLOCKS; i <= BLOCKS; i++) {
+      addRoad(i * SPACING, 0, ROAD, 2 * BLOCKS * SPACING + 200);
+      addRoad(0, i * SPACING, 2 * BLOCKS * SPACING + 200, ROAD);
+      addSidewalk(i * SPACING + 7, 0, 2.5, 2 * BLOCKS * SPACING + 200);
+      addSidewalk(i * SPACING - 7, 0, 2.5, 2 * BLOCKS * SPACING + 200);
+      addSidewalk(0, i * SPACING + 7, 2 * BLOCKS * SPACING + 200, 2.5);
+      addSidewalk(0, i * SPACING - 7, 2 * BLOCKS * SPACING + 200, 2.5);
+    }
+
+    // Buildings
+    const bMats = [
+      new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.9 }),
+      new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.9 }),
+      new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.9 }),
+      new THREE.MeshStandardMaterial({ color: 0x3f3f46, roughness: 0.9 }),
+    ];
+
+    function rand(min, max) { return min + Math.random() * (max - min); }
+    function seededRandom(seed) {
+      return function () {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+      };
+    }
+    const worldRand = seededRandom(12345);
+    function worldRandRange(min, max) { return min + worldRand() * (max - min); }
+
+    function addBuilding(cx, cz, w, d, h) {
+      const geo = new THREE.BoxGeometry(w, h, d);
+      const mat = bMats[(Math.random() * bMats.length) | 0];
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(cx, h / 2, cz);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      scene.add(m);
+      addStaticCollider(m, true);
+      return m;
+    }
+
+    // Create blocks of buildings (deterministic for multiplayer)
+    for (let bx = -BLOCKS; bx <= BLOCKS; bx++) {
+      for (let bz = -BLOCKS; bz <= BLOCKS; bz++) {
+        const px = bx * SPACING;
+        const pz = bz * SPACING;
+        if (Math.abs(px) < ROAD || Math.abs(pz) < ROAD) continue;
+        const count = 3 + ((worldRand() * 4) | 0);
+        for (let i = 0; i < count; i++) {
+          const w = worldRandRange(6, 14);
+          const d = worldRandRange(6, 14);
+          const h = worldRandRange(10, 42);
+          const ox = worldRandRange(-8, 8);
+          const oz = worldRandRange(-8, 8);
+          addBuilding(px + ox, pz + oz, w, d, h);
+        }
+      }
+    }
+    for (let i = 0; i < 22; i++) {
+      const x = worldRandRange(-140, 140);
+      const z = worldRandRange(-140, 140);
+      if (Math.abs(x) < 18 || Math.abs(z) < 18) continue;
+      addBuilding(x, z, worldRandRange(10, 22), worldRandRange(10, 22), worldRandRange(45, 95));
+    }
+
+    // ---------------------------
+    // Duck player
+    // ---------------------------
+    const menuStatusEl = document.getElementById("menuStatus");
+    if (menuStatusEl) menuStatusEl.textContent = "Loading duck model...";
+    await loadDuckModel();
+    if (menuStatusEl) menuStatusEl.textContent = "Click Play to join the battle";
+    duck = new THREE.Object3D();
+    duck.position.set(0, 2, 18);
+    scene.add(duck);
+
+    const duckModel = cloneDuckModel();
+    duckModel.position.set(0, 0, 0);
+    duckModel.visible = false;  // 1st person by default
+    duck.add(duckModel);
+
+    // Camera offset: a bit above duck for 1st-person-ish
+    camPivot = new THREE.Object3D();
+    camPivot.position.set(0, 1.35, 0);
+    duck.add(camPivot);
+    camPivot.add(camera);
+    camera.position.set(0, 0.05, 0.2);
+
+    let thirdPersonMode = false;
+    const CAM_1ST_PERSON = new THREE.Vector3(0, 0.05, 0.2);
+    const CAM_3RD_PERSON = new THREE.Vector3(0, 0.5, 5.5);
+
+    function setThirdPerson(on) {
+      thirdPersonMode = on;
+      camera.position.copy(on ? CAM_3RD_PERSON : CAM_1ST_PERSON);
+      duckModel.visible = on;
+    }
+
+    // ---------------------------
+    // Multiplayer
+    // ---------------------------
+    let socket = null;
+    let myId = null;
+    const otherPlayers = new Map(); // id -> { x, y, z, yaw, pitch, heldId, holdDistance, holdHeight }
+    const otherPlayerMeshes = new Map(); // id -> THREE.Group (duck mesh)
+    const objectHeldBy = new Map(); // objectId -> playerId (for objects held by others)
+
+    function createOtherPlayerDuck(color = 0x7dd3fc) {
+      const group = new THREE.Group();
+      const model = cloneDuckModel(color);
+      if (model) group.add(model);
+      scene.add(group);
+      return group;
+    }
+
+    function setupSocket() {
+      if (!socket) return;
+      socket.on("init", (data) => {
+        myId = data.yourId;
+        objectHeldBy.clear();
+        for (const [id, p] of Object.entries(data.players)) {
+          if (id === myId) continue;
+          otherPlayers.set(id, p);
+          const mesh = createOtherPlayerDuck(p.color);
+          mesh.position.set(p.x, p.y, p.z);
+          mesh.rotation.y = p.yaw;
+          otherPlayerMeshes.set(id, mesh);
+        }
+        for (const o of data.objects) {
+          if (o.heldBy) objectHeldBy.set(o.id, o.heldBy);
+          const m = dynamic[o.id];
+          if (m) {
+            m.position.set(o.x, o.y, o.z);
+            m.userData.vel.set(o.vx, o.vy, o.vz);
+          }
+        }
+      });
+      socket.on("playerJoined", (p) => {
+        otherPlayers.set(p.id, p);
+        const mesh = createOtherPlayerDuck(p.color);
+        mesh.position.set(p.x, p.y, p.z);
+        otherPlayerMeshes.set(p.id, mesh);
+      });
+      socket.on("playerLeft", (id) => {
+        otherPlayers.delete(id);
+        const mesh = otherPlayerMeshes.get(id);
+        if (mesh) {
+          scene.remove(mesh);
+          otherPlayerMeshes.delete(id);
+        }
+        for (const [objId, pid] of objectHeldBy) {
+          if (pid === id) objectHeldBy.delete(objId);
+        }
+      });
+      socket.on("playerUpdate", (data) => {
+        const { id, x, y, z, yaw, pitch, heldId, holdDistance, holdHeight } = data;
+        if (id === myId) return;
+        const p = otherPlayers.get(id) || {};
+        Object.assign(p, { x, y, z, yaw, pitch, heldId, holdDistance, holdHeight });
+        otherPlayers.set(id, p);
+        const mesh = otherPlayerMeshes.get(id);
+        if (mesh) {
+          mesh.position.set(x, y, z);
+          mesh.rotation.y = yaw;
+        }
+      });
+      socket.on("grab", (data) => {
+        const { playerId, objectId } = data;
+        if (playerId !== myId) objectHeldBy.set(objectId, playerId);
+      });
+      socket.on("throw", (data) => {
+        const { playerId, objectId, vx, vy, vz } = data;
+        objectHeldBy.delete(objectId);
+        const m = dynamic[objectId];
+        if (m && playerId !== myId) m.userData.vel.add(new THREE.Vector3(vx, vy, vz));
+      });
+      socket.on("drop", (data) => {
+        objectHeldBy.delete(data.objectId);
+      });
+    }
+
+    // Player movement
+    const keys = new Set();
+    document.addEventListener("keydown", (e) => {
+      keys.add(e.code);
+      if (e.code === "Escape") document.exitPointerLock?.();
+      if (e.code === "KeyP") setThirdPerson(!thirdPersonMode);
+    });
+    document.addEventListener("keyup", (e) => keys.delete(e.code));
+
+    let velY = 0;
+    let grounded = false;
+    const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
+
+    function playerAABB(nextPos) {
+      // Rough AABB around duck
+      const half = new THREE.Vector3(0.55, 1.1, 0.55);
+      const min = nextPos.clone().sub(half);
+      const max = nextPos.clone().add(half);
+      return new THREE.Box3(min, max);
+    }
+
+    function resolvePlayerCollisions(nextPos) {
+      let pos = nextPos.clone();
+      const pBox = playerAABB(pos);
+      const feetY = pos.y - 1.1;
+
+      // First: check for landing ON TOP of buildings
+      let roofTop = -Infinity;
+      for (const c of colliders) {
+        if (!aabbIntersects(pBox, c)) continue;
+        const overlapX = Math.min(pBox.max.x - c.min.x, c.max.x - pBox.min.x);
+        const overlapZ = Math.min(pBox.max.z - c.min.z, c.max.z - pBox.min.z);
+        const nearRoof = feetY >= c.max.y - 0.8 && feetY <= c.max.y + 0.5;
+        const onTop = nearRoof && overlapX > 0.2 && overlapZ > 0.2;
+        if (onTop && c.max.y > roofTop) roofTop = c.max.y;
+      }
+      if (roofTop > -Infinity && (velY <= 0 || grounded)) {
+        pos.y = roofTop + 1.1;
+        velY = 0;
+        grounded = true;
+        return pos;
+      }
+
+      // Otherwise: hitting sides — push back on XZ
+      for (const c of colliders) {
+        if (!aabbIntersects(playerAABB(pos), c)) continue;
+        const pBox2 = playerAABB(pos);
+        const overlapX = Math.min(pBox2.max.x - c.min.x, c.max.x - pBox2.min.x);
+        const overlapZ = Math.min(pBox2.max.z - c.min.z, c.max.z - pBox2.min.z);
+
+        if (overlapX < overlapZ) {
+          if (pos.x > (c.min.x + c.max.x) * 0.5) pos.x += overlapX + 0.01;
+          else pos.x -= overlapX + 0.01;
+        } else {
+          if (pos.z > (c.min.z + c.max.z) * 0.5) pos.z += overlapZ + 0.01;
+          else pos.z -= overlapZ + 0.01;
+        }
+      }
+      return pos;
+    }
+
+    // ---------------------------
+    // Interactables (mayhem props)
+    // ---------------------------
+    const propMat1 = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.8 });
+    const propMat2 = new THREE.MeshStandardMaterial({ color: 0xfb7185, roughness: 0.7 });
+    const propMat3 = new THREE.MeshStandardMaterial({ color: 0x60a5fa, roughness: 0.7 });
+    const propMat4 = new THREE.MeshStandardMaterial({ color: 0xa3e635, roughness: 0.7 });
+
+    function addDynamicBox(x, y, z, sx, sy, sz, mass = 1, mat = propMat1) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      scene.add(m);
+      m.userData.vel = new THREE.Vector3();
+      m.userData.mass = mass;
+      m.userData.size = new THREE.Vector3(sx, sy, sz);
+      dynamic.push(m);
+      interactables.push(m);
+      return m;
+    }
+
+    function addDynamicCylinder(x, y, z, r, h, mass = 0.8, mat = propMat2) {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 18), mat);
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      scene.add(m);
+      m.userData.vel = new THREE.Vector3();
+      m.userData.mass = mass;
+      m.userData.size = new THREE.Vector3(r * 2, h, r * 2);
+      dynamic.push(m);
+      interactables.push(m);
+      return m;
+    }
+
+    // scatter props (deterministic - must match server)
+    for (let i = 0; i < 160; i++) {
+      const x = worldRandRange(-165, 165);
+      const z = worldRandRange(-165, 165);
+      const y = 0.7 + worldRandRange(0, 0.4);
+      const pick = worldRand();
+      if (pick < 0.55) addDynamicBox(x, y, z, worldRandRange(0.6, 1.4), worldRandRange(0.6, 1.6), worldRandRange(0.6, 1.4), worldRandRange(0.8, 2.5), [propMat1,propMat3][(worldRand()*2)|0]);
+      else if (pick < 0.85) addDynamicCylinder(x, y, z, worldRandRange(0.25, 0.55), worldRandRange(0.8, 1.8), worldRandRange(0.6, 1.6), propMat2);
+      else addDynamicBox(x, y, z, worldRandRange(1.5, 2.8), worldRandRange(0.7, 1.2), worldRandRange(2.4, 4.8), worldRandRange(2.5, 6.0), propMat4);
+    }
+
+    // ---------------------------
+    // Telekinesis system
+    // ---------------------------
+    const raycaster = new THREE.Raycaster();
+    const aimDir = new THREE.Vector3();
+
+    let held = null;
+    let holdDistance = 6.5;
+    let holdHeight = 2;    // how high the object floats above its grab point
+    let holding = false;
+
+    // A visible "focus" glow sphere for held objects
+    const focus = new THREE.Mesh(
+      new THREE.SphereGeometry(0.12, 16, 12),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2, metalness: 0.0, emissive: 0x7dd3fc, emissiveIntensity: 1.2 })
+    );
+    focus.visible = false;
+    scene.add(focus);
+
+    // ---------------------------
+    // Sparkle FX for held objects
+    // ---------------------------
+    const sparkleGroup = new THREE.Group();
+    sparkleGroup.visible = false;
+    scene.add(sparkleGroup);
+
+    // Ring
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.55, 0.06, 10, 24),
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: 0x7dd3fc,
+        emissiveIntensity: 2.0,
+        roughness: 0.3,
+        metalness: 0.0,
+        transparent: true,
+        opacity: 0.95
+      })
+    );
+    ring.castShadow = false;
+    ring.receiveShadow = false;
+    sparkleGroup.add(ring);
+
+    // Particles (points)
+    const SPARKS = 60;
+    const sparksGeo = new THREE.BufferGeometry();
+    const sparksPos = new Float32Array(SPARKS * 3);
+    for (let i = 0; i < SPARKS; i++) {
+      sparksPos[i * 3 + 0] = (Math.random() - 0.5) * 1.2;
+      sparksPos[i * 3 + 1] = (Math.random() - 0.5) * 1.2;
+      sparksPos[i * 3 + 2] = (Math.random() - 0.5) * 1.2;
+    }
+    sparksGeo.setAttribute("position", new THREE.BufferAttribute(sparksPos, 3));
+
+    const sparksMat = new THREE.PointsMaterial({
+      size: 0.06,
+      transparent: true,
+      opacity: 0.9
+    });
+    const sparks = new THREE.Points(sparksGeo, sparksMat);
+    sparkleGroup.add(sparks);
+
+    let sparkleT = 0;
+    let scrollFeedback = 0;  // pops when you scroll to adjust distance
+    function updateSparkles(dt) {
+      if (!held) { sparkleGroup.visible = false; scrollFeedback = 0; return; }
+      sparkleGroup.visible = true;
+
+      scrollFeedback = Math.max(0, scrollFeedback - dt * 5);
+
+      // Position at held object
+      sparkleGroup.position.copy(held.position);
+
+      // Scale ring to object size
+      const s = held.userData?.size;
+      const radius = s ? Math.max(s.x, s.z) * 0.55 : 0.55;
+      const baseScale = Math.max(0.7, radius);
+      // Pop scale when scrolling
+      const scrollPop = 1 + scrollFeedback * 0.35;
+      ring.scale.setScalar(baseScale * scrollPop);
+
+      // Snappier rotation
+      sparkleT += dt;
+      ring.rotation.x += dt * 4.5;
+      ring.rotation.y += dt * 5.5;
+
+      // "Orbit" sparks - faster, tighter orbits
+      const posAttr = sparks.geometry.getAttribute("position");
+      for (let i = 0; i < SPARKS; i++) {
+        const a = sparkleT * 5.0 + i * 0.2;
+        const r = 0.5 + 0.2 * Math.sin(sparkleT * 4.0 + i);
+        posAttr.array[i * 3 + 0] = Math.cos(a) * r;
+        posAttr.array[i * 3 + 1] = 0.1 + 0.25 * Math.sin(a * 1.2 + i);
+        posAttr.array[i * 3 + 2] = Math.sin(a) * r;
+      }
+      posAttr.needsUpdate = true;
+
+      // Snappier pulse + scroll glow
+      const pulse = 0.8 + 0.2 * Math.sin(sparkleT * 12.0);
+      const scrollGlow = scrollFeedback * 1.5;
+      ring.material.opacity = Math.min(1, 0.7 + 0.3 * pulse + scrollGlow);
+      ring.material.emissiveIntensity = 2.0 + scrollFeedback * 2.0;
+      sparks.material.opacity = 0.7 + 0.3 * pulse + scrollFeedback * 0.4;
+    }
+
+    // ---------------------------
+    // Telekinetic jump charge particles
+    // ---------------------------
+    const chargeJumpGroup = new THREE.Group();
+    chargeJumpGroup.visible = false;
+    scene.add(chargeJumpGroup);
+
+    const CHARGE_PARTICLES = 48;
+    const chargePartGeo = new THREE.BufferGeometry();
+    const chargePartPos = new Float32Array(CHARGE_PARTICLES * 3);
+    chargePartGeo.setAttribute("position", new THREE.BufferAttribute(chargePartPos, 3));
+
+    const chargePartMat = new THREE.PointsMaterial({
+      size: 0.12,
+      color: 0x7dd3fc,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const chargePartMesh = new THREE.Points(chargePartGeo, chargePartMat);
+    chargeJumpGroup.add(chargePartMesh);
+
+    let chargeJumpT = 0;
+    function updateChargeJumpParticles(dt) {
+      if (!chargingJump) {
+        chargeJumpGroup.visible = false;
+        return;
+      }
+      chargeJumpGroup.visible = true;
+      chargeJumpGroup.position.copy(duck.position);
+      chargeJumpGroup.position.y = duck.position.y - 0.5;
+
+      chargeJumpT += dt;
+      const frac = getChargeFraction();
+      const radius = 0.8 + frac * 1.4;
+      const height = 0.5 + frac * 1.2;
+      const posAttr = chargePartGeo.getAttribute("position");
+
+      for (let i = 0; i < CHARGE_PARTICLES; i++) {
+        const a = chargeJumpT * 3.5 + (i / CHARGE_PARTICLES) * Math.PI * 2;
+        const r = radius * (0.7 + 0.3 * Math.sin(chargeJumpT * 8 + i * 0.5));
+        const h = (i / CHARGE_PARTICLES) * height * 2 - height;
+        posAttr.array[i * 3 + 0] = Math.cos(a) * r;
+        posAttr.array[i * 3 + 1] = h + 0.3 * Math.sin(chargeJumpT * 6 + i);
+        posAttr.array[i * 3 + 2] = Math.sin(a) * r;
+      }
+      posAttr.needsUpdate = true;
+
+      const pulse = 0.6 + 0.4 * Math.sin(chargeJumpT * 10);
+      chargePartMat.opacity = (0.5 + frac * 0.5) * pulse;
+      chargePartMat.size = 0.08 + frac * 0.08;
+    }
+
+    function forwardVector() {
+      // Use the camera's actual world orientation (more reliable than manual yaw/pitch math)
+      camera.getWorldDirection(aimDir);
+      return aimDir.normalize();
+    }
+
+    function getAimHit() {
+      const origin = camera.getWorldPosition(new THREE.Vector3());
+      const dir = forwardVector().clone();
+      raycaster.set(origin, dir);
+      raycaster.far = 40;
+      const hits = raycaster.intersectObjects(interactables, false);
+      return hits.length ? hits[0] : null;
+    }
+
+    // Grab / throw / drop — hold left click to charge
+    let charging = false;
+    let chargeStart = 0;
+    const CHARGE_MAX_TIME = 1.5; // seconds to reach full charge
+    const CHARGE_MIN_STRENGTH = 28;
+    const CHARGE_MAX_STRENGTH = 85;
+    const TELEJUMP_MIN = 18;
+    const TELEJUMP_MAX = 55;
+    const TELEJUMP_PITCH_THRESHOLD = 0.4; // must look down this much to trigger
+    const chargeBarEl = document.getElementById("chargeBar");
+    const chargeFillEl = document.getElementById("chargeFill");
+
+    function getChargeFraction() {
+      if (!charging) return 0;
+      return Math.min(1, (performance.now() - chargeStart) / 1000 / CHARGE_MAX_TIME);
+    }
+
+    function releaseHeldNPC() {
+      if (held?.userData?.npc) held.userData.npc.grabbed = false;
+    }
+
+    let chargingJump = false;
+
+    function releaseThrow() {
+      if (!held) {
+        charging = false;
+        chargeBarEl.classList.remove("visible");
+        chargeFillEl.style.width = "0%";
+        return;
+      }
+      playSfx("throw");
+      if (held.userData?.npc) playSfx(Math.random() < 0.5 ? "scream" : "scream2");
+      const frac = getChargeFraction();
+      const strength = CHARGE_MIN_STRENGTH + frac * (CHARGE_MAX_STRENGTH - CHARGE_MIN_STRENGTH);
+      const dir = forwardVector().clone();
+      const impulse = dir.multiplyScalar(strength);
+      held.userData.vel.add(impulse);
+      const objectId = dynamic.indexOf(held);
+      if (objectId >= 0 && socket) socket.emit("throw", { objectId, vx: impulse.x, vy: impulse.y, vz: impulse.z });
+      releaseHeldNPC();
+      held = null;
+      focus.visible = false;
+      sparkleGroup.visible = false;
+      charging = false;
+      chargeBarEl.classList.remove("visible");
+      chargeFillEl.style.width = "0%";
+    }
+
+    function releaseTelekineticJump() {
+      if (!chargingJump) return;
+      const frac = getChargeFraction();
+      const strength = TELEJUMP_MIN + frac * (TELEJUMP_MAX - TELEJUMP_MIN);
+      const flatForward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+      velY = strength * 0.5;
+      grounded = false;
+      launchVel.copy(flatForward).multiplyScalar(strength * 0.9);
+      chargingJump = false;
+      charging = false;
+      chargeBarEl.classList.remove("visible");
+      chargeFillEl.style.width = "0%";
+    }
+
+    document.addEventListener("mousedown", (e) => {
+      if (!pointerLocked) return;
+
+      if (e.button === 0) { // left click — start charging throw or telekinetic jump
+        if (held) {
+          charging = true;
+          chargeStart = performance.now();
+          chargeBarEl.classList.add("visible");
+        } else if (pitch >= TELEJUMP_PITCH_THRESHOLD) {
+          chargingJump = true;
+          charging = true;
+          chargeStart = performance.now();
+          chargeJumpT = 0;
+          chargeBarEl.classList.add("visible");
+        }
+      }
+      if (e.button === 2) { // right click drop
+        if (held) {
+          const objectId = dynamic.indexOf(held);
+          if (objectId >= 0 && socket) socket.emit("drop", objectId);
+          releaseHeldNPC();
+          held = null;
+          focus.visible = false;
+          sparkleGroup.visible = false;
+          charging = false;
+          chargeBarEl.classList.remove("visible");
+          chargeFillEl.style.width = "0%";
+        }
+      }
+    });
+
+    document.addEventListener("mouseup", (e) => {
+      if (!pointerLocked) return;
+      if (e.button === 0 && charging) {
+        if (chargingJump) releaseTelekineticJump();
+        else releaseThrow();
+      }
+    });
+
+    document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    document.addEventListener("wheel", (e) => {
+      if (!pointerLocked) return;
+      if (held) {
+        // Scroll pulls/pushes object toward/away from player
+        holdDistance += (e.deltaY < 0 ? 1 : -1) * 1.2;
+        holdDistance = Math.max(2, Math.min(40, holdDistance));
+        scrollFeedback = 0.3;
+      } else {
+        holdDistance += (e.deltaY > 0 ? 1 : -1) * 0.9;
+        holdDistance = Math.max(2.2, Math.min(18, holdDistance));
+      }
+    }, { passive: true });
+
+    // Hold E to grab
+    function updateHolding() {
+      holding = keys.has("KeyE");
+      if (!holding) return;
+
+      if (!held) {
+        const hit = getAimHit();
+        if (hit && hit.object) {
+          const obj = hit.object;
+          const npc = obj.userData.npc;
+          if (npc) {
+            // Grabbing an NPC — hold the group mesh
+            held = npc.mesh;
+            held.userData.vel = npc.vel;
+            held.userData.size = new THREE.Vector3(1.1, 1.5, 1.1);
+            held.userData.mass = 1.5;
+            held.userData.npc = npc;
+            npc.grabbed = true;
+          } else {
+            held = obj;
+          }
+          const objectId = dynamic.indexOf(held);
+          if (objectId >= 0 && socket) socket.emit("grab", objectId);
+          focus.visible = true;
+          const grabPos = held.parent === scene ? held.position : held.getWorldPosition(new THREE.Vector3());
+          const grabDist = grabPos.clone().sub(duck.position).length();
+          holdDistance = Math.max(2, Math.min(40, grabDist));
+          holdHeight = grabPos.y + 5;
+          held.userData.vel.y += 2.5;
+          playSfx("grab");
+        }
+      }
+    }
+
+    // Pull held object toward target point in front of camera
+    function applyTelekinesis(dt) {
+      if (!held) return;
+
+      // Target floats in front of the player at holdDistance, elevated by holdHeight
+      const origin = duck.position.clone();
+      const flatForward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+      const target = origin.add(flatForward.multiplyScalar(holdDistance));
+      target.y = holdHeight;
+
+      // Rigid follow: lerp position directly, kill velocity
+      const lerp = 1 - Math.pow(0.001, dt); // ~0.93 at 60fps — snappy but smooth
+      held.position.lerp(target, lerp);
+      held.userData.vel.set(0, 0, 0);
+
+      focus.position.copy(held.position).add(new THREE.Vector3(0, held.userData.size.y * 0.45, 0));
+    }
+
+    // ---------------------------
+    // Simple dynamic collision (floor + building AABBs)
+    // ---------------------------
+    function meshAABB(mesh) {
+      const half = mesh.userData.size.clone().multiplyScalar(0.5);
+      const min = mesh.position.clone().sub(half);
+      const max = mesh.position.clone().add(half);
+      return new THREE.Box3(min, max);
+    }
+
+    function resolveDynamicCollisions(m) {
+      // Floor
+      const halfY = m.userData.size.y * 0.5;
+      if (m.position.y - halfY < FLOOR_Y) {
+        m.position.y = FLOOR_Y + halfY;
+        if (m.userData.vel.y < 0) m.userData.vel.y *= -0.35;
+        // friction
+        m.userData.vel.x *= 0.8;
+        m.userData.vel.z *= 0.8;
+      }
+
+      // Against static colliders (buildings)
+      const box = meshAABB(m);
+      for (const c of colliders) {
+        if (!aabbIntersects(box, c)) continue;
+
+        // Resolve minimal overlap axis: X/Z/Y
+        const overlapX = Math.min(box.max.x - c.min.x, c.max.x - box.min.x);
+        const overlapY = Math.min(box.max.y - c.min.y, c.max.y - box.min.y);
+        const overlapZ = Math.min(box.max.z - c.min.z, c.max.z - box.min.z);
+
+        // choose smallest
+        if (overlapY <= overlapX && overlapY <= overlapZ) {
+          // push up/down
+          if (m.position.y > (c.min.y + c.max.y) * 0.5) m.position.y += overlapY + 0.01;
+          else m.position.y -= overlapY + 0.01;
+          m.userData.vel.y *= -0.25;
+        } else if (overlapX <= overlapZ) {
+          if (m.position.x > (c.min.x + c.max.x) * 0.5) m.position.x += overlapX + 0.01;
+          else m.position.x -= overlapX + 0.01;
+          m.userData.vel.x *= -0.3;
+        } else {
+          if (m.position.z > (c.min.z + c.max.z) * 0.5) m.position.z += overlapZ + 0.01;
+          else m.position.z -= overlapZ + 0.01;
+          m.userData.vel.z *= -0.3;
+        }
+
+        // update box after resolve
+        const b2 = meshAABB(m);
+        box.min.copy(b2.min);
+        box.max.copy(b2.max);
+      }
+    }
+
+    // ---------------------------
+    // Building destruction (partial — shatters near impact)
+    // ---------------------------
+    const BREAK_SPEED = 55; // ~75% charge throw needed to break
+    const BLAST_RADIUS = 8; // how far from impact blocks shatter
+    const BLOCK_SIZE = 2.5; // grid subdivision size
+    const MAX_DEBRIS = 80;  // cap to prevent lag
+    const sharedDebrisGeo = new THREE.BoxGeometry(1, 1, 1);
+
+    function debrisCount() {
+      return dynamic.filter((m) => m.userData?.isDebris).length;
+    }
+
+    function removeSettledDebris() {
+      if (debrisCount() <= MAX_DEBRIS) return;
+      const toRemove = [];
+      for (const m of dynamic) {
+        if (!m.userData?.isDebris) continue;
+        const halfY = m.userData.size?.y * 0.5 ?? 0.5;
+        const settled = m.userData.vel.length() < 1.5 && m.position.y - halfY < 1.5;
+        if (settled) toRemove.push(m);
+        if (debrisCount() - toRemove.length <= MAX_DEBRIS) break;
+      }
+      for (const m of toRemove) {
+        scene.remove(m);
+        // Don't dispose geometry — it's shared
+        const di = dynamic.indexOf(m);
+        if (di >= 0) dynamic.splice(di, 1);
+        const ii = interactables.indexOf(m);
+        if (ii >= 0) interactables.splice(ii, 1);
+      }
+    }
+
+    function shatterBuilding(bldg, impactPos, impactVel) {
+      playSfx("shatter");
+      const mesh = bldg.mesh;
+      const box = bldg.box;
+      const mat = mesh.material;
+
+      const bw = box.max.x - box.min.x;
+      const bh = box.max.y - box.min.y;
+      const bd = box.max.z - box.min.z;
+
+      // Remove original mesh + collider
+      scene.remove(mesh);
+      if (mesh.geometry) mesh.geometry.dispose();
+      const ci = colliders.indexOf(box);
+      if (ci >= 0) colliders.splice(ci, 1);
+      bldg.destroyed = true;
+
+      // Subdivide into grid blocks
+      const nx = Math.max(1, Math.ceil(bw / BLOCK_SIZE));
+      const ny = Math.max(1, Math.ceil(bh / BLOCK_SIZE));
+      const nz = Math.max(1, Math.ceil(bd / BLOCK_SIZE));
+      const cellW = bw / nx;
+      const cellH = bh / ny;
+      const cellD = bd / nz;
+
+      const debrisMat = new THREE.MeshStandardMaterial({
+        color: mat.color.clone(),
+        roughness: 0.85,
+      });
+
+      for (let ix = 0; ix < nx; ix++) {
+        for (let iy = 0; iy < ny; iy++) {
+          for (let iz = 0; iz < nz; iz++) {
+            const cx = box.min.x + (ix + 0.5) * cellW;
+            const cy = box.min.y + (iy + 0.5) * cellH;
+            const cz = box.min.z + (iz + 0.5) * cellD;
+
+            const dist = Math.sqrt(
+              (cx - impactPos.x) ** 2 +
+              (cy - impactPos.y) ** 2 +
+              (cz - impactPos.z) ** 2
+            );
+
+            if (dist < BLAST_RADIUS) {
+              // --- Dynamic debris: shatter this block ---
+              const atLimit = debrisCount() >= MAX_DEBRIS;
+              if (atLimit) continue; // skip spawning when at cap
+              const pieces = debrisCount() > MAX_DEBRIS * 0.7 ? 1 : 2 + Math.floor(Math.random() * 2);
+              for (let p = 0; p < pieces; p++) {
+                const sw = rand(0.2, cellW * 0.5);
+                const sh = rand(0.2, cellH * 0.5);
+                const sd = rand(0.2, cellD * 0.5);
+
+                const debris = new THREE.Mesh(sharedDebrisGeo, debrisMat);
+                debris.scale.set(sw, sh, sd);
+                debris.castShadow = false;
+                debris.receiveShadow = false;
+                debris.position.set(
+                  cx + rand(-cellW * 0.3, cellW * 0.3),
+                  cy + rand(-cellH * 0.3, cellH * 0.3),
+                  cz + rand(-cellD * 0.3, cellD * 0.3)
+                );
+                scene.add(debris);
+
+                // Explode away from impact
+                const dirX = cx - impactPos.x;
+                const dirY = cy - impactPos.y;
+                const dirZ = cz - impactPos.z;
+                const force = Math.max(0.5, 1 - dist / BLAST_RADIUS);
+                const spread = 6 * force;
+                debris.userData.vel = new THREE.Vector3(
+                  dirX * 2 * force + impactVel.x * 0.2 + rand(-spread, spread),
+                  dirY * 1.5 * force + rand(2, 8) * force,
+                  dirZ * 2 * force + impactVel.z * 0.2 + rand(-spread, spread)
+                );
+                debris.userData.mass = rand(0.5, 2);
+                debris.userData.size = new THREE.Vector3(sw, sh, sd);
+                debris.userData.isDebris = true;
+                dynamic.push(debris);
+                interactables.push(debris);
+              }
+            } else {
+              // --- Static remnant: keep this block as part of the building ---
+              const block = new THREE.Mesh(
+                new THREE.BoxGeometry(cellW * 0.98, cellH * 0.98, cellD * 0.98),
+                mat
+              );
+              block.position.set(cx, cy, cz);
+              block.castShadow = true;
+              block.receiveShadow = true;
+              scene.add(block);
+              // Register as a new breakable building
+              const newBox = makeAABBFromMesh(block);
+              colliders.push(newBox);
+              buildings.push({ mesh: block, box: newBox, destroyed: false });
+            }
+          }
+        }
+      }
+    }
+
+    // Check if a fast-moving object should break a building
+    function checkBuildingDestruction(m) {
+      const speed = m.userData.vel.length();
+      if (speed < BREAK_SPEED) return;
+
+      const mBox = meshAABB(m);
+      for (const bldg of buildings) {
+        if (bldg.destroyed) continue;
+        if (!aabbIntersects(mBox, bldg.box)) continue;
+        shatterBuilding(bldg, m.position.clone(), m.userData.vel.clone());
+        m.userData.vel.multiplyScalar(0.4);
+        return;
+      }
+    }
+
+    // ---------------------------
+    // NPC Ducks
+    // ---------------------------
+    const NPC_COUNT = 20;
+    const npcDucks = [];
+    const npcColors = [0xf5d547, 0x7dd3fc, 0xa3e635, 0xfb7185, 0xc084fc, 0xfbbf24, 0x67e8f9, 0xf472b6];
+
+    function createNPCDuck() {
+      const color = npcColors[(Math.random() * npcColors.length) | 0];
+      const group = new THREE.Group();
+      const model = cloneDuckModel(color);
+      if (model) {
+        model.scale.multiplyScalar(2);
+        group.add(model);
+      }
+
+      const x = rand(-80, 80);
+      const z = rand(-80, 80);
+      group.position.set(x, 1.1, z);
+      scene.add(group);
+
+      // Measure actual model bounds once for accurate hitbox
+      const modelBox = new THREE.Box3().setFromObject(group);
+      const modelSize = modelBox.getSize(new THREE.Vector3());
+      const hitboxSize = modelSize.clone();
+
+      const npc = {
+        mesh: group,
+        vel: new THREE.Vector3(),
+        targetDir: new THREE.Vector3(rand(-1, 1), 0, rand(-1, 1)).normalize(),
+        changeDirTimer: rand(1, 4),
+        speed: rand(2.5, 5),
+        paused: false,
+        pauseTimer: 0,
+        grabbed: false,
+        hitboxSize: hitboxSize,
+      };
+
+      group.traverse((child) => {
+        if (child.isMesh) {
+          child.userData.npc = npc;
+          child.userData.size = hitboxSize.clone();
+          child.userData.mass = 1.5;
+          child.userData.vel = npc.vel;
+          interactables.push(child);
+        }
+      });
+
+      return npc;
+    }
+
+    for (let i = 0; i < NPC_COUNT; i++) {
+      npcDucks.push(createNPCDuck());
+    }
+
+    function npcAABB(npc, pos) {
+      const half = npc.hitboxSize.clone().multiplyScalar(0.5);
+      const center = pos !== undefined ? pos : npc.mesh.position;
+      return new THREE.Box3(center.clone().sub(half), center.clone().add(half));
+    }
+
+    function updateNPCs(dt) {
+      for (const npc of npcDucks) {
+        // --- Grabbed: telekinesis controls position ---
+        if (npc.grabbed) {
+          npc.mesh.rotation.z = Math.sin(performance.now() * 0.01) * 0.3;
+          continue;
+        }
+
+        // --- Airborne / thrown: apply physics ---
+        if (npc.mesh.position.y > 1.2 || npc.vel.lengthSq() > 4) {
+          npc.vel.y -= GRAVITY * dt;
+          npc.vel.multiplyScalar(0.995);
+          npc.mesh.position.addScaledVector(npc.vel, dt);
+
+          // Check building destruction — NPCs can smash buildings too
+          const npcSpeed = npc.vel.length();
+          if (npcSpeed >= BREAK_SPEED) {
+            const npcBox = npcAABB(npc);
+            for (const bldg of buildings) {
+              if (bldg.destroyed) continue;
+              if (!aabbIntersects(npcBox, bldg.box)) continue;
+              shatterBuilding(bldg, npc.mesh.position.clone(), npc.vel.clone());
+              npc.vel.multiplyScalar(0.4);
+              break;
+            }
+          }
+
+          // Bounce off buildings (non-destructive hits)
+          const npcHitBox = npcAABB(npc);
+          for (const c of colliders) {
+            if (!aabbIntersects(npcHitBox, c)) continue;
+            const overlapX = Math.min(npcHitBox.max.x - c.min.x, c.max.x - npcHitBox.min.x);
+            const overlapZ = Math.min(npcHitBox.max.z - c.min.z, c.max.z - npcHitBox.min.z);
+            if (overlapX < overlapZ) {
+              if (npc.mesh.position.x > (c.min.x + c.max.x) * 0.5) npc.mesh.position.x += overlapX + 0.01;
+              else npc.mesh.position.x -= overlapX + 0.01;
+              npc.vel.x *= -0.4;
+            } else {
+              if (npc.mesh.position.z > (c.min.z + c.max.z) * 0.5) npc.mesh.position.z += overlapZ + 0.01;
+              else npc.mesh.position.z -= overlapZ + 0.01;
+              npc.vel.z *= -0.4;
+            }
+            break;
+          }
+
+          // Floor
+          if (npc.mesh.position.y < 1.1) {
+            npc.mesh.position.y = 1.1;
+            if (npc.vel.y < 0) npc.vel.y *= -0.3;
+            npc.vel.x *= 0.7;
+            npc.vel.z *= 0.7;
+          }
+
+          // Tumble while airborne
+          npc.mesh.rotation.x += npc.vel.length() * dt * 0.5;
+          npc.mesh.rotation.z += dt * 3;
+
+          // Once settled, resume AI
+          if (npc.mesh.position.y <= 1.15 && npc.vel.length() < 1.5) {
+            npc.vel.set(0, 0, 0);
+            npc.mesh.rotation.x = 0;
+            npc.mesh.rotation.z = 0;
+            npc.changeDirTimer = rand(0.5, 2);
+          }
+          continue;
+        }
+
+        // --- Normal AI wandering ---
+        npc.changeDirTimer -= dt;
+        if (npc.changeDirTimer <= 0) {
+          if (!npc.paused && Math.random() < 0.3) {
+            npc.paused = true;
+            npc.pauseTimer = rand(1, 3);
+          } else {
+            npc.paused = false;
+            npc.targetDir.set(rand(-1, 1), 0, rand(-1, 1)).normalize();
+            npc.speed = rand(2.5, 5);
+          }
+          npc.changeDirTimer = rand(1.5, 5);
+        }
+
+        if (npc.paused) {
+          npc.pauseTimer -= dt;
+          if (npc.pauseTimer <= 0) npc.paused = false;
+          npc.mesh.rotation.y += Math.sin(performance.now() * 0.003) * dt * 2;
+          continue;
+        }
+
+        // Move toward target direction
+        const move = npc.targetDir.clone().multiplyScalar(npc.speed * dt);
+        const nextPos = npc.mesh.position.clone().add(move);
+        nextPos.y = 1.1;
+
+        // Collision check — bounce off buildings
+        const box = npcAABB(npc, nextPos);
+        let blocked = false;
+        for (const c of colliders) {
+          if (aabbIntersects(box, c)) {
+            blocked = true;
+            break;
+          }
+        }
+
+        if (blocked) {
+          npc.targetDir.set(rand(-1, 1), 0, rand(-1, 1)).normalize();
+          npc.changeDirTimer = rand(0.5, 2);
+        } else {
+          npc.mesh.position.copy(nextPos);
+        }
+
+        // Keep in bounds
+        if (Math.abs(npc.mesh.position.x) > 150 || Math.abs(npc.mesh.position.z) > 150) {
+          npc.targetDir.set(-npc.mesh.position.x, 0, -npc.mesh.position.z).normalize();
+        }
+
+        // Face movement direction (add Math.PI to match duck model orientation)
+        npc.mesh.rotation.y = Math.atan2(npc.targetDir.x, npc.targetDir.z) + Math.PI;
+
+        // Waddle animation
+        const waddle = Math.sin(performance.now() * 0.008 * npc.speed) * 0.12;
+        npc.mesh.rotation.z = waddle;
+      }
+    }
+
+    // ---------------------------
+    // Game loop
+    // ---------------------------
+    const statsEl = document.getElementById("stats");
+    const clock = new THREE.Clock();
+    let fpsSmoothing = 0;
+    let startPos = duck.position.clone();
+
+    function reset() {
+      duck.position.copy(startPos);
+      velY = 0;
+      launchVel.set(0, 0, 0);
+      chargingJump = false;
+      releaseHeldNPC();
+      held = null;
+      focus.visible = false;
+      sparkleGroup.visible = false;
+
+      // lightly re-scatter dynamic props
+      for (const m of dynamic) {
+        m.position.set(rand(-90, 90), 1.2 + rand(0, 1.2), rand(-90, 90));
+        m.userData.vel.set(0, 0, 0);
+      }
+    }
+
+    function step(dt) {
+      // Update camera orientation from yaw/pitch
+      duck.rotation.y = yaw;
+      camPivot.rotation.x = pitch;
+
+      // Input -> movement (relative to yaw)
+      // Forward should be -Z in camera space so W goes "into" the screen
+      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+      const right   = new THREE.Vector3(forward.z, 0, -forward.x).normalize();
+
+      const sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
+      const speed = sprint ? 14.5 : 9.5;
+
+      let move = new THREE.Vector3();
+      if (keys.has("KeyW")) move.add(forward);
+      if (keys.has("KeyS")) move.sub(forward);
+      if (keys.has("KeyA")) move.add(right);
+      if (keys.has("KeyD")) move.sub(right);
+
+      if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed * dt);
+
+      // Jump
+      if ((keys.has("Space")) && grounded) {
+        velY = 9.5;
+        grounded = false;
+      }
+
+      // Gravity
+      velY -= GRAVITY * dt;
+
+      // Next position
+      let nextPos = duck.position.clone().add(move);
+      nextPos.addScaledVector(launchVel, dt);
+      launchVel.multiplyScalar(Math.max(0, 1 - 4.5 * dt));
+      nextPos.y += velY * dt;
+
+      // Floor
+      if (nextPos.y < 1.1) {
+        nextPos.y = 1.1;
+        velY = 0;
+        launchVel.multiplyScalar(0.3); // friction on landing
+        grounded = true;
+      }
+
+      // Collisions with buildings
+      nextPos = resolvePlayerCollisions(nextPos);
+
+      duck.position.copy(nextPos);
+
+      // Walking waddle in 3rd person when moving (negated for coordinate convention)
+      if (thirdPersonMode && duckModel) {
+        const isMoving = move.lengthSq() > 0;
+        const waddle = isMoving && grounded
+          ? -Math.sin(performance.now() * 0.008 * speed) * 0.12
+          : 0;
+        duckModel.rotation.z = waddle;
+      }
+
+      // Send position to server
+      if (socket && myId) {
+        socket.emit("playerUpdate", {
+          x: duck.position.x, y: duck.position.y, z: duck.position.z,
+          yaw, pitch, velY,
+          heldId: held ? dynamic.indexOf(held) : null,
+          holdDistance, holdHeight,
+        });
+      }
+
+      // Update objects held by other players
+      for (const [objectId, playerId] of objectHeldBy) {
+        const p = otherPlayers.get(playerId);
+        const m = dynamic[objectId];
+        if (!p || !m) continue;
+        const flatForward = new THREE.Vector3(-Math.sin(p.yaw), 0, -Math.cos(p.yaw)).normalize();
+        const target = new THREE.Vector3(p.x, p.y, p.z).add(flatForward.multiplyScalar(p.holdDistance || 6));
+        target.y = p.holdHeight ?? 5;
+        m.position.lerp(target, 0.3);
+        m.userData.vel.set(0, 0, 0);
+      }
+
+      // Telekinesis grab / hold
+      updateHolding();
+      applyTelekinesis(dt);
+      updateSparkles(dt);
+      updateChargeJumpParticles(dt);
+
+      // Update charge bar
+      if (charging && (held || chargingJump)) {
+        const frac = getChargeFraction();
+        chargeFillEl.style.width = (frac * 100).toFixed(1) + "%";
+      }
+
+      // Cleanup settled debris when over limit
+      removeSettledDebris();
+
+      // Update dynamic props
+      for (let i = 0; i < dynamic.length; i++) {
+        const m = dynamic[i];
+        if (objectHeldBy.has(i)) continue; // held by another player
+        if (m === held) continue; // position controlled by applyTelekinesis
+        m.userData.vel.y -= GRAVITY * dt;
+        m.userData.vel.multiplyScalar(DAMPING);
+        m.position.addScaledVector(m.userData.vel, dt);
+        checkBuildingDestruction(m);
+        resolveDynamicCollisions(m);
+      }
+
+      // Dynamic-to-NPC collisions: blocks hit NPCs
+      for (const m of dynamic) {
+        const mSpeed = m.userData.vel.length();
+        if (mSpeed < 2) continue; // skip slow/resting objects
+        const mBox = meshAABB(m);
+        for (const npc of npcDucks) {
+          if (npc.grabbed) continue;
+          if (held === npc.mesh) continue;
+          const nBox = npcAABB(npc);
+          if (!aabbIntersects(mBox, nBox)) continue;
+          // Transfer momentum to the NPC
+          const knockback = m.userData.vel.clone().multiplyScalar(0.8 / Math.max(0.5, npc.mesh.userData?.mass || 1.5));
+          knockback.y = Math.max(knockback.y, 4 + mSpeed * 0.2); // always launch upward
+          npc.vel.add(knockback);
+          // Reduce the object's velocity
+          m.userData.vel.multiplyScalar(0.3);
+          break; // one NPC per object per frame
+        }
+      }
+
+      // NPC-to-NPC collisions: thrown NPCs hit other NPCs
+      for (const a of npcDucks) {
+        if (a.vel.length() < 5) continue;
+        const aBox = npcAABB(a);
+        for (const b of npcDucks) {
+          if (a === b || b.grabbed) continue;
+          const bBox = npcAABB(b);
+          if (!aabbIntersects(aBox, bBox)) continue;
+          const knock = a.vel.clone().multiplyScalar(0.6);
+          knock.y = Math.max(knock.y, 3 + a.vel.length() * 0.15);
+          b.vel.add(knock);
+          a.vel.multiplyScalar(0.4);
+          break;
+        }
+      }
+
+      // NPC ducks
+      updateNPCs(dt);
+
+      // Reset hotkey
+      if (keys.has("KeyR")) reset();
+
+      // HUD
+      const fps = 1 / Math.max(1e-6, dt);
+      fpsSmoothing = fpsSmoothing ? (fpsSmoothing * 0.92 + fps * 0.08) : fps;
+      const playerCount = socket && myId ? otherPlayers.size + 1 : 1;
+      statsEl.textContent =
+        `Objects: ${interactables.length} • Held: ${held ? "yes" : "none"} • Players: ${playerCount} • FPS: ${fpsSmoothing.toFixed(0)}`;
+    }
+
+    function animate() {
+      const dt = Math.min(0.033, clock.getDelta());
+      if (pointerLocked) step(dt);
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    // ---------------------------
+    // Resize
+    // ---------------------------
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Initial hint behavior
+    document.addEventListener("click", () => {
+      const hint = document.getElementById("hint");
+      hint.style.opacity = "0.75";
+      setTimeout(() => hint.style.opacity = "0.95", 500);
+    });
+
+    // Put player in a nice start spot
+    reset();
+  </script>
+</body>
+</html>
