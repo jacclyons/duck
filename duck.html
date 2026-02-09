@@ -17,7 +17,9 @@
       max-width: 420px;
       line-height: 1.25;
       user-select: none;
+      display: none; /* shown only when online */
     }
+    #hud.online { display: block; }
     #hud b { display:block; margin-bottom: 6px; }
     #crosshair {
       position: fixed; left:50%; top:50%; transform: translate(-50%, -50%);
@@ -141,6 +143,44 @@
       background: #181818;
     }
     #menu .status { margin-top: 16px; font-size: 0.9rem; opacity: 0.8; }
+    /* Pause overlay (blurred background) + sidebar */
+    #pauseOverlay {
+      position: fixed; inset: 0; z-index: 25;
+      display: none;
+      background: rgba(0,0,0,0.35);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+    #pauseOverlay.visible { display: block; }
+    #pauseSidebar {
+      position: absolute; right: 0; top: 0; bottom: 0;
+      width: 260px;
+      background: #181818;
+      border-left: 1px solid rgba(255,255,255,0.12);
+      padding: 28px 24px;
+      box-shadow: -8px 0 32px rgba(0,0,0,0.4);
+      display: flex; flex-direction: column; gap: 20px;
+    }
+    #pauseSidebar h2 {
+      margin: 0; font-size: 1.1rem; font-weight: 600;
+      color: rgba(255,255,255,0.95);
+    }
+    #pauseSidebar .pauseBtn {
+      display: block; width: 100%;
+      padding: 14px 20px;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 12px;
+      font-size: 1rem; font-weight: 700;
+      cursor: pointer;
+      background: rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.95);
+    }
+    #pauseSidebar .pauseBtn:hover { filter: brightness(1.1); }
+    #pauseSidebar .pauseBtnPrimary {
+      background: #FFBE00;
+      color: #181818;
+      border-color: transparent;
+    }
     canvas { display:block; }
   </style>
 </head>
@@ -148,8 +188,12 @@
   <div id="menu">
     <div class="card">
       <img src="duck.svg" alt="duck" class="menu-logo" />
-      <button id="playBtn" class="playBtn">Play (Multiplayer)</button>
-      <button id="playOfflineBtn" class="playBtn" style="margin-top:10px; background:rgba(255,255,255,0.2); color:inherit;">Play Offline</button>
+      <button id="createGameBtn" class="playBtn">Create game (host)</button>
+      <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+        <input id="roomIdInput" type="text" placeholder="Room ID" style="flex:1; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:inherit; font-size:0.95rem;" maxlength="20" />
+        <button id="joinGameBtn" class="playBtn" style="background:rgba(255,255,255,0.2); color:inherit;">Join game</button>
+      </div>
+      <button id="playOfflineBtn" class="playBtn" style="margin-top:10px; background:rgba(255,255,255,0.15); color:inherit;">Play Offline</button>
       <details class="controls-dropdown">
         <summary>Controls</summary>
         <div class="controls-inner controls">
@@ -163,12 +207,20 @@
   </div>
 
   <div id="hud">
-    <b>DUCK!</b>
+    <b>Room: <span id="hudRoom">—</span></b>
     <div id="stats">Objects: 0 • Held: none • FPS: —</div>
   </div>
   <div id="crosshair"></div>
   <div id="chargeBar"><div id="chargeFill"></div></div>
   <div id="hint">Click to lock mouse • E to grab • Wheel to adjust distance • Hold LMB to charge throw</div>
+
+  <div id="pauseOverlay">
+    <div id="pauseSidebar">
+      <h2>Paused</h2>
+      <button type="button" class="pauseBtn pauseBtnPrimary" id="resumeBtn">Resume</button>
+      <button type="button" class="pauseBtn" id="returnToMenuBtn">Return to Menu</button>
+    </div>
+  </div>
 
   <script type="importmap">
     {
@@ -178,12 +230,207 @@
       }
     }
   </script>
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
   <script type="module">
     import * as THREE from "three";
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
-    const SERVER_URL = window.location.origin;
+    // ---------------------------
+    // PeerJS multiplayer (P2P via https://peerjs.com/)
+    // ---------------------------
+    const WORLD_SEED = 12345;
+    function seededRandom(seed) {
+      return function () {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+      };
+    }
+    function generateObjectLayout() {
+      const r = seededRandom(WORLD_SEED);
+      const objects = [];
+      for (let i = 0; i < 160; i++) {
+        const x = -165 + r() * 330;
+        const z = -165 + r() * 330;
+        const y = 0.7 + r() * 0.4;
+        const pick = r();
+        let sx, sy, sz, mass;
+        if (pick < 0.55) {
+          sx = 0.6 + r() * 0.8; sy = 0.6 + r() * 1.0; sz = 0.6 + r() * 0.8;
+          mass = 0.8 + r() * 1.7;
+        } else if (pick < 0.85) {
+          const rad = 0.25 + r() * 0.3;
+          const h = 0.8 + r() * 1.0;
+          sx = rad * 2; sy = h; sz = rad * 2;
+          mass = 0.6 + r() * 1.0;
+        } else {
+          sx = 1.5 + r() * 1.3; sy = 0.7 + r() * 0.5; sz = 2.4 + r() * 2.4;
+          mass = 2.5 + r() * 3.5;
+        }
+        objects.push({
+          id: i,
+          x, y, z,
+          vx: 0, vy: 0, vz: 0,
+          mass,
+          size: { x: sx, y: sy, z: sz },
+          heldBy: null,
+        });
+      }
+      return objects;
+    }
+    const DUCK_COLORS = [0xf5d547, 0x7dd3fc, 0xa3e635, 0xfb7185, 0xc084fc];
+    function getNextColor(players) {
+      const used = new Set([...players.values()].map((p) => p.color));
+      for (const c of DUCK_COLORS) {
+        if (!used.has(c)) return c;
+      }
+      return DUCK_COLORS[players.size % DUCK_COLORS.length];
+    }
+
+    const net = {
+      peer: null,
+      isHost: false,
+      myId: null,
+      connections: new Map(),
+      hostState: null,
+      messageHandlers: new Map(),
+      onConnect: null,
+      onConnectError: null,
+      send(msg) {
+        if (net.isHost) {
+          net.connections.forEach((conn) => conn.send(msg));
+        } else {
+          const c = net.connections.get(net.hostId);
+          if (c && c.open) c.send(msg);
+        }
+      },
+      sendTo(peerId, msg) {
+        const c = net.connections.get(peerId);
+        if (c && c.open) c.send(msg);
+      },
+      broadcast(excludeId, msg) {
+        net.connections.forEach((conn, peerId) => {
+          if (peerId !== excludeId && conn.open) conn.send(msg);
+        });
+      },
+      on(type, handler) {
+        if (!net.messageHandlers.has(type)) net.messageHandlers.set(type, []);
+        net.messageHandlers.get(type).push(handler);
+      },
+      emit(type, data) {
+        const handlers = net.messageHandlers.get(type);
+        if (handlers) handlers.forEach((h) => h(data));
+      },
+      handleMessage(fromId, msg) {
+        if (!msg || !msg.type) return;
+        if (net.isHost) net.handleHostMessage(fromId, msg);
+        else net.emit(msg.type, msg);
+      },
+      handleHostMessage(fromId, msg) {
+        const { type } = msg;
+        const players = net.hostState.players;
+        const objects = net.hostState.objects;
+        const id = fromId;
+        let p = players.get(id);
+
+        if (type === "playerUpdate") {
+          if (!p) return;
+          p.x = msg.x;
+          p.y = msg.y;
+          p.z = msg.z;
+          p.yaw = msg.yaw;
+          p.pitch = msg.pitch;
+          p.velY = msg.velY ?? p.velY;
+          p.holdDistance = msg.holdDistance;
+          p.holdHeight = msg.holdHeight;
+          net.broadcast(null, { type: "playerUpdate", id, ...msg });
+          net.emit("playerUpdate", { id, ...msg }); // host view sync
+          if (msg.heldPlayerId) {
+            const held = players.get(msg.heldPlayerId);
+            if (held && held.grabbedBy === id) {
+              const dist = msg.holdDistance ?? 6;
+              const height = msg.holdHeight ?? 5;
+              const x = p.x + -Math.sin(p.yaw) * dist;
+              const z = p.z + -Math.cos(p.yaw) * dist;
+              net.sendTo(msg.heldPlayerId, { type: "grabbedPosition", x, y: height, z });
+            }
+          }
+          return;
+        }
+        if (type === "grab") {
+          const obj = objects[msg.objectId];
+          if (!obj || !p || obj.heldBy !== null) return;
+          obj.heldBy = id;
+          p.heldId = msg.objectId;
+          net.connections.forEach((conn) => conn.send({ type: "grab", playerId: id, objectId: msg.objectId }));
+          net.emit("grab", { playerId: id, objectId: msg.objectId });
+          return;
+        }
+        if (type === "throw") {
+          const { objectId, vx, vy, vz } = msg;
+          const obj = objects[objectId];
+          if (!obj || !p || obj.heldBy !== id) return;
+          obj.heldBy = null;
+          p.heldId = null;
+          obj.vx = vx;
+          obj.vy = vy;
+          obj.vz = vz;
+          net.broadcast(null, { type: "throw", playerId: id, objectId, vx, vy, vz });
+          net.emit("throw", { playerId: id, objectId, vx, vy, vz });
+          return;
+        }
+        if (type === "drop") {
+          const obj = objects[msg.objectId];
+          if (!obj || !p || obj.heldBy !== id) return;
+          obj.heldBy = null;
+          p.heldId = null;
+          net.broadcast(null, { type: "drop", playerId: id, objectId: msg.objectId });
+          net.emit("drop", { playerId: id, objectId: msg.objectId });
+          return;
+        }
+        if (type === "grabPlayer") {
+          const grabbed = players.get(msg.grabbedId);
+          if (!p || !grabbed || grabbed.grabbedBy) return;
+          grabbed.grabbedBy = id;
+          net.broadcast(null, { type: "playerGrabbed", grabberId: id, grabbedId: msg.grabbedId });
+          net.emit("playerGrabbed", { grabberId: id, grabbedId: msg.grabbedId });
+          return;
+        }
+        if (type === "releasePlayer") {
+          const grabbedId = [...players.entries()].find(([_, pl]) => pl.grabbedBy === id)?.[0];
+          if (!grabbedId) return;
+          players.get(grabbedId).grabbedBy = null;
+          net.broadcast(null, { type: "playerReleased", grabberId: id, grabbedId });
+          net.emit("playerReleased", { grabberId: id, grabbedId });
+          return;
+        }
+        if (type === "throwPlayer") {
+          const { grabbedId, vx, vy, vz } = msg;
+          const grabbed = players.get(grabbedId);
+          if (!grabbed || grabbed.grabbedBy !== id) return;
+          grabbed.grabbedBy = null;
+          net.sendTo(grabbedId, { type: "playerThrown", vx, vy, vz });
+          net.broadcast(null, { type: "playerReleased", grabberId: id, grabbedId });
+          return;
+        }
+        if (type === "hitPlayer") {
+          if (players.has(msg.targetId)) net.sendTo(msg.targetId, { type: "hitBy", vx: msg.vx, vy: msg.vy, vz: msg.vz });
+          return;
+        }
+        if (type === "objectSync") {
+          const obj = objects[msg.id];
+          if (!obj || obj.heldBy !== null) return;
+          obj.x = msg.x;
+          obj.y = msg.y;
+          obj.z = msg.z;
+          obj.vx = msg.vx;
+          obj.vy = msg.vy;
+          obj.vz = msg.vz;
+          net.broadcast(id, { type: "objectSync", id: msg.id, x: msg.x, y: msg.y, z: msg.z, vx: msg.vx, vy: msg.vy, vz: msg.vz });
+          net.emit("objectSync", { id: msg.id, x: msg.x, y: msg.y, z: msg.z, vx: msg.vx, vy: msg.vy, vz: msg.vz });
+          return;
+        }
+      },
+    };
 
     // Duck model (loaded async)
     let duckModelTemplate = null;
@@ -324,36 +571,147 @@
     const playBtn = document.getElementById("playBtn");
     const menuStatus = document.getElementById("menuStatus");
 
-    playBtn.addEventListener("click", async () => {
-      menuStatus.textContent = "Connecting...";
-      if (typeof io === "undefined") {
-        menuStatus.textContent = "Socket.io failed to load. Use: npm start";
-        return;
-      }
-      try {
-        socket = io(SERVER_URL);
-        setupSocket();
-        socket.on("connect", () => {
-          menuStatus.textContent = "Connected! Locking pointer...";
-          renderer.domElement.requestPointerLock();
+    function startAsHost(roomId) {
+      net.isHost = true;
+      net.myId = roomId;
+      myId = roomId;
+      net.hostState = {
+        players: new Map([[roomId, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color: DUCK_COLORS[0] }]]),
+        objects: generateObjectLayout(),
+      };
+      net.peer = new Peer(roomId, { secure: true, host: "0.peerjs.com", port: 443, path: "/" });
+      net.peer.on("open", () => {
+        menuStatus.textContent = "Room: " + roomId + " — Share this ID or link. Waiting for players...";
+        socket = {
+          emit(type, payload) {
+            const msg = typeof payload === "object" && payload !== null && !Array.isArray(payload) && !payload.type ? { type, ...payload } : { type, ...(payload !== undefined ? (type === "grab" || type === "drop" ? { objectId: payload } : payload) : {}) };
+            net.send(msg);
+          },
+        };
+        setupNetHandlers();
+        net.onConnect && net.onConnect();
+      });
+      net.peer.on("connection", (conn) => {
+        conn.on("open", () => {
+          const id = conn.peer;
+          net.connections.set(id, conn);
+          const color = getNextColor(net.hostState.players);
+          net.hostState.players.set(id, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color });
+          conn.send({
+            type: "init",
+            yourId: id,
+            players: Object.fromEntries([...net.hostState.players.entries()].map(([k, v]) => [k, { ...v, id: k }])),
+            objects: net.hostState.objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, mass: o.mass, size: o.size, heldBy: o.heldBy })),
+          });
+          net.broadcast(id, { type: "playerJoined", id, x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, color });
+          // Host view: show new player
+          otherPlayers.set(id, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color });
+          const mesh = createOtherPlayerDuck(id, color);
+          mesh.position.set(0, 2, 18);
+          otherPlayerMeshes.set(id, mesh);
+          conn.on("data", (msg) => net.handleMessage(id, msg));
+          conn.on("close", () => {
+            const p = net.hostState.players.get(id);
+            if (p?.heldId != null) {
+              net.hostState.objects[p.heldId].heldBy = null;
+              net.broadcast(null, { type: "drop", playerId: id, objectId: p.heldId });
+            }
+            const grabbedId = [...net.hostState.players.entries()].find(([_, pl]) => pl.grabbedBy === id)?.[0];
+            if (grabbedId) {
+              net.hostState.players.get(grabbedId).grabbedBy = null;
+              net.broadcast(null, { type: "playerReleased", grabberId: id, grabbedId });
+            }
+            net.hostState.players.delete(id);
+            net.connections.delete(id);
+            net.broadcast(null, { type: "playerLeft", id });
+            net.emit("playerLeft", id); // host view: remove other player mesh
+          });
         });
-        socket.on("connect_error", () => {
-          menuStatus.textContent = "Could not connect. Run: npm start";
-        });
-      } catch (e) {
-        menuStatus.textContent = "Error: " + e.message;
-      }
-    });
+      });
+      net.peer.on("error", (err) => {
+        menuStatus.textContent = "Error: " + (err.message || err.type || "Could not create room");
+      });
+    }
 
-    document.getElementById("playOfflineBtn").addEventListener("click", () => {
-      menuStatus.textContent = "Playing offline...";
-      renderer.domElement.requestPointerLock();
-    });
+    function startAsClient(hostId) {
+      net.isHost = false;
+      net.hostId = hostId;
+      net.peer = new Peer({ secure: true, host: "0.peerjs.com", port: 443, path: "/" });
+      net.peer.on("open", () => {
+        const conn = net.peer.connect(hostId);
+        net.connections.set(hostId, conn);
+        conn.on("open", () => {
+          net.myId = net.peer.id;
+          myId = net.peer.id;
+          socket = {
+            emit(type, payload) {
+              const msg = typeof payload === "object" && payload !== null && !Array.isArray(payload) && !payload.type ? { type, ...payload } : { type, ...(payload !== undefined ? (type === "grab" || type === "drop" ? { objectId: payload } : payload) : {}) };
+              net.send(msg);
+            },
+          };
+          setupNetHandlers();
+          conn.on("data", (msg) => net.handleMessage(hostId, msg));
+          conn.on("close", () => {
+            menuStatus.textContent = "Host disconnected";
+            net.connections.delete(hostId);
+          });
+          net.onConnect && net.onConnect();
+        });
+        conn.on("error", () => { menuStatus.textContent = "Connection failed. Check Room ID."; });
+      });
+      net.peer.on("error", (err) => {
+        menuStatus.textContent = "Error: " + (err.message || err.type || "Could not connect");
+      });
+    }
+
+    function randomRoomId() {
+      return "duck-" + Math.random().toString(36).slice(2, 10);
+    }
+
+    let hadPointerLock = false; // true after user has entered game at least once
+    const pauseOverlay = document.getElementById("pauseOverlay");
+    const returnToMenuBtn = document.getElementById("returnToMenuBtn");
 
     document.addEventListener("pointerlockchange", () => {
       pointerLocked = (document.pointerLockElement === renderer.domElement);
-      menu.classList.toggle("hidden", pointerLocked);
+      if (pointerLocked) {
+        hadPointerLock = true;
+        menu.classList.add("hidden");
+        if (pauseOverlay) pauseOverlay.classList.remove("visible");
+      } else {
+        // Left pointer lock: if we were in game, show pause sidebar; else show main menu
+        if (hadPointerLock && pauseOverlay) {
+          pauseOverlay.classList.add("visible");
+          menu.classList.add("hidden");
+        } else {
+          if (pauseOverlay) pauseOverlay.classList.remove("visible");
+          menu.classList.remove("hidden");
+        }
+      }
     });
+
+    function resumeGame() {
+      if (pauseOverlay) pauseOverlay.classList.remove("visible");
+      renderer.domElement.requestPointerLock();
+    }
+
+    const resumeBtn = document.getElementById("resumeBtn");
+    if (resumeBtn) resumeBtn.addEventListener("click", resumeGame);
+
+    if (returnToMenuBtn) {
+      returnToMenuBtn.addEventListener("click", () => {
+        hadPointerLock = false;
+        if (pauseOverlay) pauseOverlay.classList.remove("visible");
+        menu.classList.remove("hidden");
+        document.exitPointerLock?.();
+      });
+    }
+
+    if (pauseOverlay) {
+      pauseOverlay.addEventListener("click", (e) => {
+        if (e.target === pauseOverlay) resumeGame();
+      });
+    }
 
     let duck = null;
     let camPivot = null;
@@ -452,13 +810,7 @@
     ];
 
     function rand(min, max) { return min + Math.random() * (max - min); }
-    function seededRandom(seed) {
-      return function () {
-        seed = (seed * 16807) % 2147483647;
-        return seed / 2147483647;
-      };
-    }
-    const worldRand = seededRandom(12345);
+    const worldRand = seededRandom(12345); // seededRandom defined earlier (PeerJS section)
     function worldRandRange(min, max) { return min + worldRand() * (max - min); }
 
     function addBuilding(cx, cz, w, d, h) {
@@ -501,9 +853,10 @@
     // Duck player
     // ---------------------------
     const menuStatusEl = document.getElementById("menuStatus");
+    const roomIdInput = document.getElementById("roomIdInput");
     if (menuStatusEl) menuStatusEl.textContent = "Loading duck model...";
     await loadDuckModel();
-    if (menuStatusEl) menuStatusEl.textContent = "Click Play to join the battle";
+    if (menuStatusEl) menuStatusEl.textContent = "Create game or enter Room ID to join";
     duck = new THREE.Object3D();
     duck.position.set(0, 2, 18);
     scene.add(duck);
@@ -533,7 +886,7 @@
     // ---------------------------
     // Multiplayer
     // ---------------------------
-    let socket = null;
+    let socket = null; // compatibility adapter: set when Peer connected; socket.emit(type, data) -> net.send(...)
     let myId = null;
     const otherPlayers = new Map(); // id -> { x, y, z, yaw, pitch, heldId, holdDistance, holdHeight }
     const otherPlayerMeshes = new Map(); // id -> THREE.Group (duck mesh)
@@ -552,9 +905,18 @@
       return group;
     }
 
-    function setupSocket() {
-      if (!socket) return;
-      socket.on("init", (data) => {
+    net.onConnect = () => {
+      const hud = document.getElementById("hud");
+      const roomEl = document.getElementById("hudRoom");
+      const roomCode = net.isHost ? net.myId : net.hostId;
+      if (hud) hud.classList.add("online");
+      if (roomEl && roomCode) roomEl.textContent = roomCode;
+      menuStatus.textContent = "Connected! Locking pointer...";
+      renderer.domElement.requestPointerLock();
+    };
+
+    function setupNetHandlers() {
+      net.on("init", (data) => {
         myId = data.yourId;
         objectHeldBy.clear();
         for (const [id, p] of Object.entries(data.players)) {
@@ -574,13 +936,13 @@
           }
         }
       });
-      socket.on("playerJoined", (p) => {
+      net.on("playerJoined", (p) => {
         otherPlayers.set(p.id, p);
         const mesh = createOtherPlayerDuck(p.id, p.color);
         mesh.position.set(p.x, p.y, p.z);
         otherPlayerMeshes.set(p.id, mesh);
       });
-      socket.on("playerLeft", (id) => {
+      net.on("playerLeft", (id) => {
         if (heldPlayerId === id) heldPlayerId = null;
         otherPlayers.delete(id);
         const mesh = otherPlayerMeshes.get(id);
@@ -594,7 +956,7 @@
           if (pid === id) objectHeldBy.delete(objId);
         }
       });
-      socket.on("playerUpdate", (data) => {
+      net.on("playerUpdate", (data) => {
         const { id, x, y, z, yaw, pitch, heldId, holdDistance, holdHeight } = data;
         if (id === myId) return;
         const p = otherPlayers.get(id) || {};
@@ -606,37 +968,44 @@
           mesh.rotation.y = yaw;
         }
       });
-      socket.on("grab", (data) => {
+      net.on("grab", (data) => {
         const { playerId, objectId } = data;
         if (playerId !== myId) objectHeldBy.set(objectId, playerId);
       });
-      socket.on("throw", (data) => {
+      net.on("throw", (data) => {
         const { playerId, objectId, vx, vy, vz } = data;
         objectHeldBy.delete(objectId);
         const m = dynamic[objectId];
         if (m && playerId !== myId) m.userData.vel.add(new THREE.Vector3(vx, vy, vz));
       });
-      socket.on("drop", (data) => {
+      net.on("drop", (data) => {
         objectHeldBy.delete(data.objectId);
       });
-      socket.on("playerGrabbed", (data) => {
+      net.on("objectSync", (data) => {
+        const m = dynamic[data.id];
+        if (m && !objectHeldBy.has(data.id)) {
+          m.position.set(data.x, data.y, data.z);
+          m.userData.vel.set(data.vx || 0, data.vy || 0, data.vz || 0);
+        }
+      });
+      net.on("playerGrabbed", (data) => {
         if (data.grabbedId === myId) grabbedBy = data.grabberId;
       });
-      socket.on("playerReleased", (data) => {
+      net.on("playerReleased", (data) => {
         if (data.grabbedId === myId) grabbedBy = null;
         if (data.grabberId === myId && data.grabbedId === heldPlayerId) heldPlayerId = null;
       });
-      socket.on("grabbedPosition", (data) => {
+      net.on("grabbedPosition", (data) => {
         lastGrabbedPosition = data;
       });
-      socket.on("playerThrown", (data) => {
+      net.on("playerThrown", (data) => {
         grabbedBy = null;
         const { vx, vy, vz } = data;
         launchVel.set(vx, 0, vz);
         velY = vy;
         grounded = false;
       });
-      socket.on("hitBy", (data) => {
+      net.on("hitBy", (data) => {
         const { vx, vy, vz } = data;
         launchVel.addScaledVector(new THREE.Vector3(vx, 0, vz), 1);
         velY += vy;
@@ -644,11 +1013,37 @@
       });
     }
 
+    // Menu buttons (attached after load so setupNetHandlers, otherPlayers, etc. exist)
+    document.getElementById("createGameBtn").addEventListener("click", () => {
+      menuStatus.textContent = "Creating room...";
+      if (typeof Peer === "undefined") {
+        menuStatus.textContent = "PeerJS failed to load. Check connection.";
+        return;
+      }
+      const roomId = randomRoomId();
+      startAsHost(roomId);
+      if (roomIdInput) roomIdInput.value = roomId;
+    });
+    document.getElementById("joinGameBtn").addEventListener("click", () => {
+      const hostId = (roomIdInput && roomIdInput.value.trim()) || prompt("Enter Room ID:");
+      if (!hostId || !hostId.trim()) return;
+      menuStatus.textContent = "Joining...";
+      if (typeof Peer === "undefined") {
+        menuStatus.textContent = "PeerJS failed to load.";
+        return;
+      }
+      startAsClient(hostId.trim());
+    });
+    document.getElementById("playOfflineBtn").addEventListener("click", () => {
+      menuStatus.textContent = "Playing offline...";
+      renderer.domElement.requestPointerLock();
+    });
+
     // Player movement
     const keys = new Set();
     document.addEventListener("keydown", (e) => {
       keys.add(e.code);
-      if (e.code === "Escape") document.exitPointerLock?.();
+      if (e.code === "Escape") document.exitPointerLock?.(); // leaves game → pointerlockchange shows pause sidebar
       if (e.code === "KeyP") setThirdPerson(!thirdPersonMode);
     });
     document.addEventListener("keyup", (e) => keys.delete(e.code));
@@ -1734,12 +2129,14 @@
       // Reset hotkey
       if (keys.has("KeyR")) reset();
 
-      // HUD
-      const fps = 1 / Math.max(1e-6, dt);
-      fpsSmoothing = fpsSmoothing ? (fpsSmoothing * 0.92 + fps * 0.08) : fps;
-      const playerCount = socket && myId ? otherPlayers.size + 1 : 1;
-      statsEl.textContent =
-        `Objects: ${interactables.length} • Held: ${held ? "yes" : "none"} • Players: ${playerCount} • FPS: ${fpsSmoothing.toFixed(0)}`;
+      // HUD (only when online)
+      if (socket && myId) {
+        const fps = 1 / Math.max(1e-6, dt);
+        fpsSmoothing = fpsSmoothing ? (fpsSmoothing * 0.92 + fps * 0.08) : fps;
+        const playerCount = otherPlayers.size + 1;
+        statsEl.textContent =
+          `Objects: ${interactables.length} • Held: ${held ? "yes" : "none"} • Players: ${playerCount} • FPS: ${fpsSmoothing.toFixed(0)}`;
+      }
     }
 
     function animate() {
