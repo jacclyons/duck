@@ -790,6 +790,7 @@
         if (pauseOverlay) pauseOverlay.classList.remove("visible");
         menu.classList.remove("hidden");
         document.exitPointerLock?.();
+        if (typeof reset === "function") reset(); // clear character position/state when leaving
       });
     }
 
@@ -1045,6 +1046,7 @@
     }
 
     net.onConnect = () => {
+      if (typeof reset === "function") reset(); // always start at spawn when entering a game
       const hud = document.getElementById("hud");
       const roomEl = document.getElementById("hudRoom");
       const roomCode = net.isHost ? net.myId : net.hostId;
@@ -1156,12 +1158,16 @@
         launchVel.set(vx, 0, vz);
         velY = vy;
         grounded = false;
+        tumblePitch += vy * 0.04;
+        tumbleRoll += (vx + vz) * 0.03;
       });
       net.on("hitBy", (data) => {
         const { vx, vy, vz } = data;
         launchVel.addScaledVector(new THREE.Vector3(vx, 0, vz), 1);
         velY += vy;
         grounded = false;
+        tumblePitch += vy * 0.035;
+        tumbleRoll += (vx + vz) * 0.025;
       });
       net.on("worldReset", (data) => {
         if (data.objects) applyWorldReset(data.objects);
@@ -1252,6 +1258,9 @@
 
     let velY = 0;
     let grounded = false;
+    let tumblePitch = 0;
+    let tumbleRoll = 0;
+    const TUMBLE_MAX = 1.25;
     let envUpdateTick = 0; // host: broadcast env every N frames
     const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
 
@@ -2143,6 +2152,8 @@
       duck.position.copy(startPos);
       velY = 0;
       launchVel.set(0, 0, 0);
+      tumblePitch = 0;
+      tumbleRoll = 0;
       chargingJump = false;
       releaseHeldNPC();
       held = null;
@@ -2182,7 +2193,11 @@
         if (keys.has("KeyA")) move.add(right);
         if (keys.has("KeyD")) move.sub(right);
 
-        if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed * dt);
+        if (move.lengthSq() > 0) {
+          move.normalize().multiplyScalar(speed * dt);
+          const tumbleAmount = Math.abs(tumblePitch) + Math.abs(tumbleRoll);
+          if (tumbleAmount > 0.35) move.multiplyScalar(Math.max(0.35, 1 - tumbleAmount * 0.8));
+        }
 
         // Shift+Space = charge telekinetic jump; Space alone = normal jump
         const shiftHeld = keys.has("ShiftLeft") || keys.has("ShiftRight");
@@ -2222,6 +2237,8 @@
           duck.position.set(0, startPos.y, 0);
           velY = 0;
           launchVel.set(0, 0, 0);
+          tumblePitch = 0;
+          tumbleRoll = 0;
           releaseHeldNPC();
           held = null;
           if (heldPlayerId && socket) socket.emit("releasePlayer");
@@ -2238,7 +2255,21 @@
             : 0;
           duckModel.rotation.z = waddle;
         }
+
+        // Tumble physics: accumulate when airborne, decay when grounded
+        if (grounded) {
+          tumblePitch *= 0.88;
+          tumbleRoll *= 0.88;
+        } else {
+          tumblePitch += velY * dt * 0.4;
+          tumbleRoll += (launchVel.x - launchVel.z) * dt * 0.28;
+        }
+        tumblePitch = Math.max(-TUMBLE_MAX, Math.min(TUMBLE_MAX, tumblePitch));
+        tumbleRoll = Math.max(-TUMBLE_MAX, Math.min(TUMBLE_MAX, tumbleRoll));
       }
+
+      duck.rotation.x = tumblePitch;
+      duck.rotation.z = tumbleRoll;
 
       // Send position to server (include id so receivers know whose position this is)
       if (socket && myId) {
