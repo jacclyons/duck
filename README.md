@@ -1,4 +1,4 @@
-# Duckkinesis: City Mayhem
+# DUCK!: A Duck FriendSlop Game
 
 Multiplayer telekinesis battles. You're a duck with telekinesis—grab crates, cars, and cones, then throw them at other players.
 

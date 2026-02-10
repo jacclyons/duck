@@ -802,13 +802,14 @@
       addSidewalk(0, i * SPACING - 7, 2 * BLOCKS * SPACING + 200, 2.5);
     }
 
-    // Buildings
-    const bMats = [
-      new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.9 }),
-      new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.9 }),
-      new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.9 }),
-      new THREE.MeshStandardMaterial({ color: 0x3f3f46, roughness: 0.9 }),
-    ];
+    // Buildings (repeatable stone wall texture)
+    const wallTexture = await new Promise((resolve, reject) => {
+      new THREE.TextureLoader().load("wall.jpg", resolve, undefined, reject);
+    }).catch(() => null);
+    if (wallTexture) {
+      wallTexture.wrapS = wallTexture.wrapT = THREE.RepeatWrapping;
+      wallTexture.colorSpace = THREE.SRGBColorSpace;
+    }
 
     function rand(min, max) { return min + Math.random() * (max - min); }
     const worldRand = seededRandom(12345); // seededRandom defined earlier (PeerJS section)
@@ -816,7 +817,14 @@
 
     function addBuilding(cx, cz, w, d, h) {
       const geo = new THREE.BoxGeometry(w, h, d);
-      const mat = bMats[(Math.random() * bMats.length) | 0];
+      const mat = wallTexture
+        ? (() => {
+            const tex = wallTexture.clone();
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(Math.max(1, w / 3), Math.max(1, h / 3));
+            return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 });
+          })()
+        : new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.9 });
       const m = new THREE.Mesh(geo, mat);
       m.position.set(cx, h / 2, cz);
       m.castShadow = true;
