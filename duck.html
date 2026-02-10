@@ -361,7 +361,7 @@
           if (!obj || !p || obj.heldBy !== null) return;
           obj.heldBy = id;
           p.heldId = msg.objectId;
-          net.connections.forEach((conn) => conn.send({ type: "grab", playerId: id, objectId: msg.objectId }));
+          net.broadcast(null, { type: "grab", playerId: id, objectId: msg.objectId });
           net.emit("grab", { playerId: id, objectId: msg.objectId });
           return;
         }
@@ -427,6 +427,13 @@
           obj.vz = msg.vz;
           net.broadcast(id, { type: "objectSync", id: msg.id, x: msg.x, y: msg.y, z: msg.z, vx: msg.vx, vy: msg.vy, vz: msg.vz });
           net.emit("objectSync", { id: msg.id, x: msg.x, y: msg.y, z: msg.z, vx: msg.vx, vy: msg.vy, vz: msg.vz });
+          return;
+        }
+        if (type === "resetWorld") {
+          net.hostState.objects = generateObjectLayout();
+          const payload = { type: "worldReset", objects: net.hostState.objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, heldBy: o.heldBy })) };
+          net.broadcast(null, payload);
+          applyWorldReset(net.hostState.objects);
           return;
         }
       },
@@ -515,7 +522,7 @@
     // SFX
     // ---------------------------
     const sfx = {};
-    ["grab", "throw", "shatter", "scream", "scream2"].forEach((name) => {
+    ["grab", "throw", "shatter", "scream", "scream2", "ow", "ow2"].forEach((name) => {
       const a = new Audio(`sfx/${name}.mp3`);
       a.volume = 0.7;
       sfx[name] = a;
@@ -532,7 +539,19 @@
     // Basic setup
     // ---------------------------
     const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x0b1020, 80, 260);
+    // Sky blue gradient background (lighter at horizon, deeper at zenith)
+    const skyCanvas = document.createElement("canvas");
+    skyCanvas.width = 2;
+    skyCanvas.height = 256;
+    const skyCtx = skyCanvas.getContext("2d");
+    const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 256);
+    skyGrad.addColorStop(0, "#5ba3e8");   // deeper blue at top
+    skyGrad.addColorStop(0.6, "#87CEEB"); // sky blue
+    skyGrad.addColorStop(1, "#b8dff5");    // light blue at horizon
+    skyCtx.fillStyle = skyGrad;
+    skyCtx.fillRect(0, 0, 2, 256);
+    scene.background = new THREE.CanvasTexture(skyCanvas);
+    scene.fog = new THREE.Fog(0x87CEEB, 80, 260);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -564,6 +583,7 @@
     // Pointer lock + look
     // ---------------------------
     let pointerLocked = false;
+    let gameStartTime = 0;
     let yaw = 0;
     let pitch = 0;
 
@@ -676,6 +696,7 @@
     document.addEventListener("pointerlockchange", () => {
       pointerLocked = (document.pointerLockElement === renderer.domElement);
       if (pointerLocked) {
+        gameStartTime = performance.now();
         hadPointerLock = true;
         menu.classList.add("hidden");
         if (pauseOverlay) pauseOverlay.classList.remove("visible");
@@ -738,7 +759,8 @@
 
     const dynamic = []; // objects with velocity
     const colliders = []; // static AABBs: {min,max}
-    const buildings = []; // { mesh, box } — parallel to colliders for buildings
+    const buildings = []; // { mesh, box, destroyed, id } — parallel to colliders for buildings
+    let nextBuildingId = 0;
     const interactables = []; // dynamic targets for telekinesis
 
     function makeAABBFromMesh(mesh) {
@@ -749,7 +771,7 @@
     function addStaticCollider(mesh, isBuilding = false) {
       const box = makeAABBFromMesh(mesh);
       colliders.push(box);
-      if (isBuilding) buildings.push({ mesh, box, destroyed: false });
+      if (isBuilding) buildings.push({ mesh, box, destroyed: false, id: nextBuildingId++ });
     }
 
     // Simple AABB check for player vs walls/buildings
@@ -1039,6 +1061,37 @@
         velY += vy;
         grounded = false;
       });
+      net.on("worldReset", (data) => {
+        if (data.objects) applyWorldReset(data.objects);
+      });
+      net.on("buildingDestroyed", (data) => {
+        const idx = buildings.findIndex((b) => b.id === data.buildingId);
+        if (idx < 0) return;
+        const bldg = buildings[idx];
+        scene.remove(bldg.mesh);
+        if (bldg.mesh.geometry) bldg.mesh.geometry.dispose();
+        const ci = colliders.indexOf(bldg.box);
+        if (ci >= 0) colliders.splice(ci, 1);
+        buildings.splice(idx, 1);
+      });
+      net.on("envUpdate", (data) => {
+        if (data.objects) {
+          for (const o of data.objects) {
+            if (objectHeldBy.has(o.id)) continue; // keep client interpolation for held objects
+            const m = dynamic[o.id];
+            if (!m) continue;
+            m.position.set(o.x, o.y, o.z);
+            m.userData.vel.set(o.vx || 0, o.vy || 0, o.vz || 0);
+          }
+        }
+        if (data.npcs && data.npcs.length === npcDucks.length) {
+          for (let i = 0; i < npcDucks.length; i++) {
+            const n = data.npcs[i];
+            npcDucks[i].mesh.position.set(n.x, n.y, n.z);
+            npcDucks[i].vel.set(n.vx || 0, n.vy || 0, n.vz || 0);
+          }
+        }
+      });
     }
 
     // Menu buttons (attached after load so setupNetHandlers, otherPlayers, etc. exist)
@@ -1081,11 +1134,13 @@
 
     let velY = 0;
     let grounded = false;
+    let envUpdateTick = 0; // host: broadcast env every N frames
     const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
 
     // Shared duck hitbox: same for player, other players, and NPCs (model and collision match)
     const DUCK_HALF = new THREE.Vector3(0.6, 1.2, 0.6);
     const DUCK_SIZE = new THREE.Vector3(1.2, 2.4, 1.2); // full AABB size
+    const MAP_EDGE = 180; // past this x/z the player has fallen off and respawns at center
 
     function playerAABB(nextPos) {
       return new THREE.Box3(nextPos.clone().sub(DUCK_HALF), nextPos.clone().add(DUCK_HALF));
@@ -1118,6 +1173,7 @@
       }
 
       // Otherwise: hitting sides — push back on XZ
+      let playerHitWall = false;
       for (const c of colliders) {
         if (!aabbIntersects(playerAABB(pos), c)) continue;
         const pBox2 = playerAABB(pos);
@@ -1131,6 +1187,7 @@
           if (pos.z > (c.min.z + c.max.z) * 0.5) pos.z += overlapZ + 0.01;
           else pos.z -= overlapZ + 0.01;
         }
+        playerHitWall = true;
       }
       return pos;
     }
@@ -1645,6 +1702,7 @@
     }
 
     function shatterBuilding(bldg, impactPos, impactVel) {
+      if (net.isHost && bldg.id != null) net.broadcast(null, { type: "buildingDestroyed", buildingId: bldg.id });
       playSfx("shatter");
       const mesh = bldg.mesh;
       const box = bldg.box;
@@ -1738,7 +1796,7 @@
               // Register as a new breakable building
               const newBox = makeAABBFromMesh(block);
               colliders.push(newBox);
-              buildings.push({ mesh: block, box: newBox, destroyed: false });
+              buildings.push({ mesh: block, box: newBox, destroyed: false, id: nextBuildingId++ });
             }
           }
         }
@@ -1768,23 +1826,22 @@
     const npcColors = [0xf5d547, 0x7dd3fc, 0xa3e635, 0xfb7185, 0xc084fc, 0xfbbf24, 0x67e8f9, 0xf472b6];
 
     function createNPCDuck() {
-      const color = npcColors[(Math.random() * npcColors.length) | 0];
+      const color = npcColors[(worldRandRange(0, npcColors.length) | 0) % npcColors.length];
       const group = new THREE.Group();
       const model = cloneDuckModel(color);
       if (model) group.add(model);
-      // Same scale as player — no extra scaling; use shared duck hitbox
-
-      const x = rand(-80, 80);
-      const z = rand(-80, 80);
+      // Same scale as player — no extra scaling; use shared duck hitbox (seeded so multiplayer matches)
+      const x = worldRandRange(-80, 80);
+      const z = worldRandRange(-80, 80);
       group.position.set(x, DUCK_HALF.y, z);
       scene.add(group);
 
       const npc = {
         mesh: group,
         vel: new THREE.Vector3(),
-        targetDir: new THREE.Vector3(rand(-1, 1), 0, rand(-1, 1)).normalize(),
-        changeDirTimer: rand(1, 4),
-        speed: rand(2.5, 5),
+        targetDir: new THREE.Vector3(worldRandRange(-1, 1), 0, worldRandRange(-1, 1)).normalize(),
+        changeDirTimer: worldRandRange(1, 4),
+        speed: worldRandRange(2.5, 5),
         paused: false,
         pauseTimer: 0,
         grabbed: false,
@@ -1947,6 +2004,23 @@
     let fpsSmoothing = 0;
     let startPos = duck.position.clone();
 
+    function applyWorldReset(objects) {
+      objectHeldBy.clear();
+      for (const o of objects) {
+        const m = dynamic[o.id];
+        if (m) {
+          m.position.set(o.x, o.y, o.z);
+          m.userData.vel.set(o.vx || 0, o.vy || 0, o.vz || 0);
+        }
+      }
+      releaseHeldNPC();
+      held = null;
+      if (heldPlayerId && socket) socket.emit("releasePlayer");
+      heldPlayerId = null;
+      focus.visible = false;
+      sparkleGroup.visible = false;
+    }
+
     function reset() {
       duck.position.copy(startPos);
       velY = 0;
@@ -1960,10 +2034,12 @@
       focus.visible = false;
       sparkleGroup.visible = false;
 
-      // lightly re-scatter dynamic props
-      for (const m of dynamic) {
-        m.position.set(rand(-90, 90), 1.2 + rand(0, 1.2), rand(-90, 90));
-        m.userData.vel.set(0, 0, 0);
+      // In multiplayer, object positions come from worldReset; only re-scatter when offline
+      if (!(socket && myId)) {
+        for (const m of dynamic) {
+          m.position.set(rand(-90, 90), 1.2 + rand(0, 1.2), rand(-90, 90));
+          m.userData.vel.set(0, 0, 0);
+        }
       }
     }
 
@@ -2023,6 +2099,19 @@
 
         duck.position.copy(nextPos);
 
+        // Fell off the edge: respawn at center of map
+        if (Math.abs(duck.position.x) > MAP_EDGE || Math.abs(duck.position.z) > MAP_EDGE || duck.position.y < -50) {
+          duck.position.set(0, startPos.y, 0);
+          velY = 0;
+          launchVel.set(0, 0, 0);
+          releaseHeldNPC();
+          held = null;
+          if (heldPlayerId && socket) socket.emit("releasePlayer");
+          heldPlayerId = null;
+          focus.visible = false;
+          sparkleGroup.visible = false;
+        }
+
         // Walking waddle in 3rd person when moving (negated for coordinate convention)
         if (thirdPersonMode && duckModel != null) {
           const isMoving = move.lengthSq() > 0;
@@ -2072,55 +2161,69 @@
       // Cleanup settled debris when over limit
       removeSettledDebris();
 
-      // Update dynamic props
-      for (let i = 0; i < dynamic.length; i++) {
-        const m = dynamic[i];
-        if (objectHeldBy.has(i)) continue; // held by another player
-        if (m === held) continue; // position controlled by applyTelekinesis
-        m.userData.vel.y -= GRAVITY * dt;
-        m.userData.vel.multiplyScalar(DAMPING);
-        m.position.addScaledVector(m.userData.vel, dt);
-        checkBuildingDestruction(m);
-        resolveDynamicCollisions(m);
-      }
-
-      // Dynamic-to-NPC collisions: blocks hit NPCs
-      for (const m of dynamic) {
-        const mSpeed = m.userData.vel.length();
-        if (mSpeed < 2) continue; // skip slow/resting objects
-        const mBox = meshAABB(m);
-        for (const npc of npcDucks) {
-          if (npc.grabbed) continue;
-          if (held === npc.mesh) continue;
-          const nBox = npcAABB(npc);
-          if (!aabbIntersects(mBox, nBox)) continue;
-          // Transfer momentum to the NPC
-          const knockback = m.userData.vel.clone().multiplyScalar(0.8 / Math.max(0.5, npc.mesh.userData?.mass || 1.5));
-          knockback.y = Math.max(knockback.y, 4 + mSpeed * 0.2); // always launch upward
-          npc.vel.add(knockback);
-          // Reduce the object's velocity
-          m.userData.vel.multiplyScalar(0.3);
-          break; // one NPC per object per frame
+      // Server-rendered environment: only host runs object physics, NPC sim, and object–NPC collisions.
+      // Clients receive envUpdate and display; they still run PVP hit detection (emit to host).
+      const runEnvSim = !(socket && myId) || net.isHost;
+      if (runEnvSim) {
+        // Update dynamic props
+        for (let i = 0; i < dynamic.length; i++) {
+          const m = dynamic[i];
+          if (objectHeldBy.has(i)) continue; // held by another player
+          if (m === held) continue; // position controlled by applyTelekinesis
+          m.userData.vel.y -= GRAVITY * dt;
+          m.userData.vel.multiplyScalar(DAMPING);
+          m.position.addScaledVector(m.userData.vel, dt);
+          checkBuildingDestruction(m);
+          resolveDynamicCollisions(m);
         }
-      }
 
-      // NPC-to-NPC collisions: thrown NPCs hit other NPCs
-      for (const a of npcDucks) {
-        if (a.vel.length() < 5) continue;
-        const aBox = npcAABB(a);
-        for (const b of npcDucks) {
-          if (a === b || b.grabbed) continue;
-          const bBox = npcAABB(b);
-          if (!aabbIntersects(aBox, bBox)) continue;
-          const knock = a.vel.clone().multiplyScalar(0.6);
-          knock.y = Math.max(knock.y, 3 + a.vel.length() * 0.15);
-          b.vel.add(knock);
-          a.vel.multiplyScalar(0.4);
-          break;
+        // Dynamic-to-NPC collisions: blocks hit NPCs
+        for (const m of dynamic) {
+          const mSpeed = m.userData.vel.length();
+          if (mSpeed < 2) continue; // skip slow/resting objects
+          const mBox = meshAABB(m);
+          for (const npc of npcDucks) {
+            if (npc.grabbed) continue;
+            if (held === npc.mesh) continue;
+            const nBox = npcAABB(npc);
+            if (!aabbIntersects(mBox, nBox)) continue;
+            // Transfer momentum to the NPC
+            const knockback = m.userData.vel.clone().multiplyScalar(0.8 / Math.max(0.5, npc.mesh.userData?.mass || 1.5));
+            knockback.y = Math.max(knockback.y, 4 + mSpeed * 0.2); // always launch upward
+            npc.vel.add(knockback);
+            // Reduce the object's velocity
+            m.userData.vel.multiplyScalar(0.3);
+            // Play "ow" when an object hits an NPC (cooldown per NPC + grace period after spawn)
+            const t = performance.now();
+            if (t - gameStartTime > 1500 && (npc.lastOwTime == null || t - npc.lastOwTime > 350)) {
+              npc.lastOwTime = t;
+              playSfx(Math.random() < 0.5 ? "ow" : "ow2");
+            }
+            break; // one NPC per object per frame
+          }
         }
+
+        // NPC-to-NPC collisions: thrown NPCs hit other NPCs
+        for (const a of npcDucks) {
+          if (a.vel.length() < 5) continue;
+          const aBox = npcAABB(a);
+          for (const b of npcDucks) {
+            if (a === b || b.grabbed) continue;
+            const bBox = npcAABB(b);
+            if (!aabbIntersects(aBox, bBox)) continue;
+            const knock = a.vel.clone().multiplyScalar(0.6);
+            knock.y = Math.max(knock.y, 3 + a.vel.length() * 0.15);
+            b.vel.add(knock);
+            a.vel.multiplyScalar(0.4);
+            break;
+          }
+        }
+
+        // NPC ducks (host-only in multiplayer)
+        updateNPCs(dt);
       }
 
-      // PVP: thrown objects hit other players
+      // PVP: thrown objects hit other players (all peers run this and emit to host)
       for (const m of dynamic) {
         const mSpeed = m.userData.vel.length();
         if (mSpeed < 2) continue;
@@ -2153,11 +2256,35 @@
         }
       }
 
-      // NPC ducks
-      updateNPCs(dt);
+      // Host: sync world state from meshes and broadcast envUpdate to clients
+      if (net.isHost && net.hostState && (socket && myId)) {
+        const objects = net.hostState.objects;
+        for (let i = 0; i < objects.length && i < dynamic.length; i++) {
+          const m = dynamic[i];
+          objects[i].x = m.position.x;
+          objects[i].y = m.position.y;
+          objects[i].z = m.position.z;
+          objects[i].vx = m.userData.vel.x;
+          objects[i].vy = m.userData.vel.y;
+          objects[i].vz = m.userData.vel.z;
+        }
+        envUpdateTick++;
+        if (envUpdateTick % 2 === 0) {
+          const payload = {
+            type: "envUpdate",
+            objects: objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, heldBy: o.heldBy })),
+            npcs: npcDucks.map((n) => ({ x: n.mesh.position.x, y: n.mesh.position.y, z: n.mesh.position.z, vx: n.vel.x, vy: n.vel.y, vz: n.vel.z })),
+          };
+          net.broadcast(null, payload);
+          net.emit("envUpdate", payload); // host view
+        }
+      }
 
-      // Reset hotkey
-      if (keys.has("KeyR")) reset();
+      // Reset hotkey: in multiplayer tell host to reset world for everyone, then reset local state
+      if (keys.has("KeyR")) {
+        if (socket && myId) socket.emit("resetWorld");
+        reset();
+      }
 
       // HUD (only when online)
       if (socket && myId) {
