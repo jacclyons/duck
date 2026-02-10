@@ -460,6 +460,22 @@
           if (players.has(msg.targetId)) net.sendTo(msg.targetId, { type: "hitBy", vx: msg.vx, vy: msg.vy, vz: msg.vz });
           return;
         }
+        if (type === "objectHitPlayer") {
+          const { objectIndex } = msg;
+          const m = typeof dynamic !== "undefined" && dynamic[objectIndex];
+          if (m && m.userData && m.userData.vel) {
+            m.userData.vel.multiplyScalar(0.25);
+          }
+          return;
+        }
+        if (type === "npcHitPlayer") {
+          const { npcIndex } = msg;
+          const npc = typeof npcDucks !== "undefined" && npcDucks[npcIndex];
+          if (npc && npc.vel) {
+            npc.vel.multiplyScalar(0.35);
+          }
+          return;
+        }
         if (type === "myDucktag") {
           if (p) p.ducktag = msg.ducktag || "Ducky1234";
           net.broadcast(null, { type: "playerDucktag", id, ducktag: (p && p.ducktag) || "Ducky1234" });
@@ -1263,6 +1279,7 @@
     let tumblePitch = 0;
     let tumbleRoll = 0;
     let wasHitOrThrown = false;
+    let playerLastOwTime = 0;
     const TUMBLE_MAX = 1.25;
     let envUpdateTick = 0; // host: broadcast env every N frames
     const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
@@ -2393,6 +2410,62 @@
 
         // NPC ducks (host-only in multiplayer)
         updateNPCs(dt);
+      }
+
+      // Objects hit local player (blocks actually hit you!)
+      for (let i = 0; i < dynamic.length; i++) {
+        const m = dynamic[i];
+        if (!m) continue;
+        const mSpeed = m.userData.vel.length();
+        if (mSpeed < 2) continue;
+        if (objectHeldBy.has(i)) continue;
+        if (m === held) continue;
+        const mBox = meshAABB(m);
+        const pBox = playerAABB(duck.position);
+        if (!aabbIntersects(mBox, pBox)) continue;
+        const knock = m.userData.vel.clone().multiplyScalar(0.7);
+        knock.y = Math.max(knock.y, 4 + mSpeed * 0.15);
+        launchVel.add(knock);
+        velY += knock.y;
+        grounded = false;
+        wasHitOrThrown = true;
+        tumblePitch += knock.y * 0.035;
+        tumbleRoll += (knock.x + knock.z) * 0.025;
+        m.userData.vel.multiplyScalar(0.25);
+        if (socket && myId && !net.isHost) socket.emit("objectHitPlayer", { objectIndex: i });
+        const t = performance.now();
+        if (t - gameStartTime > 1500 && (playerLastOwTime == null || t - playerLastOwTime > 350)) {
+          playerLastOwTime = t;
+          playSfx(Math.random() < 0.5 ? "ow" : "ow2");
+        }
+        break;
+      }
+
+      // Thrown NPCs hit local player
+      for (let ni = 0; ni < npcDucks.length; ni++) {
+        const npc = npcDucks[ni];
+        if (npc.vel.length() < 5) continue;
+        if (npc.grabbed) continue;
+        if (held === npc.mesh) continue;
+        const nBox = npcAABB(npc);
+        const pBox = playerAABB(duck.position);
+        if (!aabbIntersects(nBox, pBox)) continue;
+        const knock = npc.vel.clone().multiplyScalar(0.6);
+        knock.y = Math.max(knock.y, 5 + npc.vel.length() * 0.2);
+        launchVel.add(knock);
+        velY += knock.y;
+        grounded = false;
+        wasHitOrThrown = true;
+        tumblePitch += knock.y * 0.035;
+        tumbleRoll += (knock.x + knock.z) * 0.025;
+        npc.vel.multiplyScalar(0.35);
+        if (socket && myId && !net.isHost) socket.emit("npcHitPlayer", { npcIndex: ni });
+        const t = performance.now();
+        if (t - gameStartTime > 1500 && (playerLastOwTime == null || t - playerLastOwTime > 350)) {
+          playerLastOwTime = t;
+          playSfx(Math.random() < 0.5 ? "ow" : "ow2");
+        }
+        break;
       }
 
       // PVP: thrown objects hit other players (all peers run this and emit to host)
