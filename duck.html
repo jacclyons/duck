@@ -199,7 +199,7 @@
         <div class="controls-inner controls">
           <kbd>WASD</kbd><span class="sep">•</span>  jump <kbd>Space</kbd><span class="sep">•</span> sprint<br/>
           <kbd>E</kbd><span class="sep">•</span> grab <kbd>Wheel</kbd><span class="sep">•</span> pull/push <kbd>LMB</kbd><span class="sep">•</span> throw <kbd>RMB</kbd><span class="sep">•</span> drop <kbd>R</kbd><span class="sep">•</span> reset<br/>
-          <kbd>P</kbd><span class="sep">•</span> 3rd person <kbd>Look down</kbd><span class="sep">+</span><kbd>LMB</kbd><span class="sep">•</span> telekinetic jump (hold to charge)
+          <kbd>P</kbd><span class="sep">•</span> 3rd person <kbd>Shift</kbd><span class="sep">+</span><kbd>Space</kbd><span class="sep">•</span> telekinetic jump (hold to charge)
         </div>
       </details>
       <div id="menuStatus" class="status">Click Play to join the battle</div>
@@ -1074,7 +1074,10 @@
       if (e.code === "Escape") document.exitPointerLock?.(); // leaves game → pointerlockchange shows pause sidebar
       if (e.code === "KeyP") setThirdPerson(!thirdPersonMode);
     });
-    document.addEventListener("keyup", (e) => keys.delete(e.code));
+    document.addEventListener("keyup", (e) => {
+      keys.delete(e.code);
+      if (e.code === "Space" && chargingJump) releaseTelekineticJump();
+    });
 
     let velY = 0;
     let grounded = false;
@@ -1251,8 +1254,8 @@
 
       sparkleGroup.position.copy(held ? held.position : focus.position);
 
-      // Scale ring to object size
-      const s = held.userData?.size;
+      // Scale ring to object size (held is null when holding another player)
+      const s = held?.userData?.size;
       const radius = s ? Math.max(s.x, s.z) * 0.55 : 0.55;
       const baseScale = Math.max(0.7, radius);
       // Pop scale when scrolling
@@ -1432,16 +1435,10 @@
     document.addEventListener("mousedown", (e) => {
       if (!pointerLocked) return;
 
-      if (e.button === 0) { // left click — start charging throw or telekinetic jump
+      if (e.button === 0) { // left click — start charging throw only (telekinetic jump is Shift+Space)
         if (held || heldPlayerId) {
           charging = true;
           chargeStart = performance.now();
-          chargeBarEl.classList.add("visible");
-        } else if (pitch >= TELEJUMP_PITCH_THRESHOLD) {
-          chargingJump = true;
-          charging = true;
-          chargeStart = performance.now();
-          chargeJumpT = 0;
           chargeBarEl.classList.add("visible");
         }
       }
@@ -1975,7 +1972,7 @@
       duck.rotation.y = yaw;
       camPivot.rotation.x = pitch;
 
-      if (grabbedBy && lastGrabbedPosition) {
+      if (grabbedBy && lastGrabbedPosition && typeof lastGrabbedPosition.x === "number") {
         duck.position.set(lastGrabbedPosition.x, lastGrabbedPosition.y, lastGrabbedPosition.z);
       } else {
         // Input -> movement (relative to yaw)
@@ -1993,7 +1990,17 @@
 
         if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed * dt);
 
-        if ((keys.has("Space")) && grounded) {
+        // Shift+Space = charge telekinetic jump; Space alone = normal jump
+        const shiftHeld = keys.has("ShiftLeft") || keys.has("ShiftRight");
+        if (keys.has("Space") && shiftHeld) {
+          if (!chargingJump) {
+            chargingJump = true;
+            charging = true;  // so getChargeFraction() and charge bar work
+            chargeStart = performance.now();
+            chargeJumpT = 0;
+            chargeBarEl.classList.add("visible");
+          }
+        } else if (keys.has("Space") && grounded) {
           velY = 9.5;
           grounded = false;
         }
@@ -2026,9 +2033,10 @@
         }
       }
 
-      // Send position to server
+      // Send position to server (include id so receivers know whose position this is)
       if (socket && myId) {
         socket.emit("playerUpdate", {
+          id: myId,
           x: duck.position.x, y: duck.position.y, z: duck.position.z,
           yaw, pitch, velY,
           heldId: held ? dynamic.indexOf(held) : null,
