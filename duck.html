@@ -636,10 +636,13 @@
     function startAsClient(hostId) {
       net.isHost = false;
       net.hostId = hostId;
+      net.messageHandlers.clear(); // fresh handlers so we don't double-register
+      setupNetHandlers();          // register before connecting so we don't miss init
       net.peer = new Peer({ secure: true, host: "0.peerjs.com", port: 443, path: "/" });
       net.peer.on("open", () => {
         const conn = net.peer.connect(hostId);
         net.connections.set(hostId, conn);
+        conn.on("data", (msg) => net.handleMessage(hostId, msg)); // receive immediately so init isn't lost
         conn.on("open", () => {
           net.myId = net.peer.id;
           myId = net.peer.id;
@@ -649,8 +652,6 @@
               net.send(msg);
             },
           };
-          setupNetHandlers();
-          conn.on("data", (msg) => net.handleMessage(hostId, msg));
           conn.on("close", () => {
             menuStatus.textContent = "Host disconnected";
             net.connections.delete(hostId);
@@ -862,9 +863,11 @@
     scene.add(duck);
 
     const duckModel = cloneDuckModel();
-    duckModel.position.set(0, 0, 0);
-    duckModel.visible = false;  // 1st person by default
-    duck.add(duckModel);
+    if (duckModel) {
+      duckModel.position.set(0, 0, 0);
+      duckModel.visible = false;  // 1st person by default
+      duck.add(duckModel);
+    }
 
     // Camera offset: a bit above duck for 1st-person-ish
     camPivot = new THREE.Object3D();
@@ -878,9 +881,10 @@
     const CAM_3RD_PERSON = new THREE.Vector3(0, 0.5, 5.5);
 
     function setThirdPerson(on) {
+      if (!duck || !camPivot || !camera) return;
       thirdPersonMode = on;
-      camera.position.copy(on ? CAM_3RD_PERSON : CAM_1ST_PERSON);
-      duckModel.visible = on;
+      camera.position.set(0, on ? 0.5 : 0.05, on ? 5.5 : 0.2);
+      if (duckModel) duckModel.visible = on;
     }
 
     // ---------------------------
@@ -895,13 +899,26 @@
     let grabbedBy = null;          // id of player holding us
     let lastGrabbedPosition = null;
 
+    // Invisible box used for grab detection so it matches the collision hitbox (DUCK_SIZE)
+    function makeGrabBox(userData) {
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(DUCK_SIZE.x, DUCK_SIZE.y, DUCK_SIZE.z),
+        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+      );
+      box.userData = userData;
+      return box;
+    }
+
     function createOtherPlayerDuck(id, color = 0x7dd3fc) {
       const group = new THREE.Group();
       const model = cloneDuckModel(color);
       if (model) group.add(model);
       group.userData.otherPlayerId = id;
+      const grabBox = makeGrabBox({ otherPlayerId: id });
+      group.add(grabBox);
+      group.userData.grabBox = grabBox;
       scene.add(group);
-      interactables.push(group);
+      interactables.push(grabBox);
       return group;
     }
 
@@ -947,9 +964,12 @@
         otherPlayers.delete(id);
         const mesh = otherPlayerMeshes.get(id);
         if (mesh) {
+          const grabBox = mesh.userData.grabBox;
+          if (grabBox) {
+            const i = interactables.indexOf(grabBox);
+            if (i >= 0) interactables.splice(i, 1);
+          }
           scene.remove(mesh);
-          const i = interactables.indexOf(mesh);
-          if (i >= 0) interactables.splice(i, 1);
           otherPlayerMeshes.delete(id);
         }
         for (const [objId, pid] of objectHeldBy) {
@@ -1052,22 +1072,22 @@
     let grounded = false;
     const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
 
+    // Shared duck hitbox: same for player, other players, and NPCs (model and collision match)
+    const DUCK_HALF = new THREE.Vector3(0.6, 1.2, 0.6);
+    const DUCK_SIZE = new THREE.Vector3(1.2, 2.4, 1.2); // full AABB size
+
     function playerAABB(nextPos) {
-      const half = new THREE.Vector3(0.55, 1.1, 0.55);
-      const min = nextPos.clone().sub(half);
-      const max = nextPos.clone().add(half);
-      return new THREE.Box3(min, max);
+      return new THREE.Box3(nextPos.clone().sub(DUCK_HALF), nextPos.clone().add(DUCK_HALF));
     }
 
     function otherPlayerAABB(pos) {
-      const half = new THREE.Vector3(0.55, 1.1, 0.55);
-      return new THREE.Box3(pos.clone().sub(half), pos.clone().add(half));
+      return new THREE.Box3(pos.clone().sub(DUCK_HALF), pos.clone().add(DUCK_HALF));
     }
 
     function resolvePlayerCollisions(nextPos) {
       let pos = nextPos.clone();
       const pBox = playerAABB(pos);
-      const feetY = pos.y - 1.1;
+      const feetY = pos.y - DUCK_HALF.y;
 
       // First: check for landing ON TOP of buildings
       let roofTop = -Infinity;
@@ -1080,7 +1100,7 @@
         if (onTop && c.max.y > roofTop) roofTop = c.max.y;
       }
       if (roofTop > -Infinity && (velY <= 0 || grounded)) {
-        pos.y = roofTop + 1.1;
+        pos.y = roofTop + DUCK_HALF.y;
         velY = 0;
         grounded = true;
         return pos;
@@ -1491,7 +1511,7 @@
             if (npc) {
               held = npc.mesh;
               held.userData.vel = npc.vel;
-              held.userData.size = new THREE.Vector3(1.1, 1.5, 1.1);
+              held.userData.size = DUCK_SIZE.clone();
               held.userData.mass = 1.5;
               held.userData.npc = npc;
               npc.grabbed = true;
@@ -1746,20 +1766,13 @@
       const color = npcColors[(Math.random() * npcColors.length) | 0];
       const group = new THREE.Group();
       const model = cloneDuckModel(color);
-      if (model) {
-        model.scale.multiplyScalar(2);
-        group.add(model);
-      }
+      if (model) group.add(model);
+      // Same scale as player — no extra scaling; use shared duck hitbox
 
       const x = rand(-80, 80);
       const z = rand(-80, 80);
-      group.position.set(x, 1.1, z);
+      group.position.set(x, DUCK_HALF.y, z);
       scene.add(group);
-
-      // Measure actual model bounds once for accurate hitbox
-      const modelBox = new THREE.Box3().setFromObject(group);
-      const modelSize = modelBox.getSize(new THREE.Vector3());
-      const hitboxSize = modelSize.clone();
 
       const npc = {
         mesh: group,
@@ -1770,18 +1783,18 @@
         paused: false,
         pauseTimer: 0,
         grabbed: false,
-        hitboxSize: hitboxSize,
+        hitboxSize: DUCK_SIZE.clone(), // same as player / other players
       };
 
-      group.traverse((child) => {
-        if (child.isMesh) {
-          child.userData.npc = npc;
-          child.userData.size = hitboxSize.clone();
-          child.userData.mass = 1.5;
-          child.userData.vel = npc.vel;
-          interactables.push(child);
-        }
+      // Grab detection: use hitbox-sized invisible box so grab matches collision
+      const grabBox = makeGrabBox({
+        npc,
+        size: DUCK_SIZE.clone(),
+        mass: 1.5,
+        vel: npc.vel,
       });
+      group.add(grabBox);
+      interactables.push(grabBox);
 
       return npc;
     }
@@ -1842,8 +1855,9 @@
           }
 
           // Floor
-          if (npc.mesh.position.y < 1.1) {
-            npc.mesh.position.y = 1.1;
+          const npcFloorY = npc.hitboxSize.y * 0.5;
+          if (npc.mesh.position.y < npcFloorY) {
+            npc.mesh.position.y = npcFloorY;
             if (npc.vel.y < 0) npc.vel.y *= -0.3;
             npc.vel.x *= 0.7;
             npc.vel.z *= 0.7;
@@ -1854,7 +1868,7 @@
           npc.mesh.rotation.z += dt * 3;
 
           // Once settled, resume AI
-          if (npc.mesh.position.y <= 1.15 && npc.vel.length() < 1.5) {
+          if (npc.mesh.position.y <= npcFloorY + 0.05 && npc.vel.length() < 1.5) {
             npc.vel.set(0, 0, 0);
             npc.mesh.rotation.x = 0;
             npc.mesh.rotation.z = 0;
@@ -1887,7 +1901,7 @@
         // Move toward target direction
         const move = npc.targetDir.clone().multiplyScalar(npc.speed * dt);
         const nextPos = npc.mesh.position.clone().add(move);
-        nextPos.y = 1.1;
+        nextPos.y = npc.hitboxSize.y * 0.5;
 
         // Collision check — bounce off buildings
         const box = npcAABB(npc, nextPos);
@@ -1983,8 +1997,8 @@
         launchVel.multiplyScalar(Math.max(0, 1 - 4.5 * dt));
         nextPos.y += velY * dt;
 
-        if (nextPos.y < 1.1) {
-          nextPos.y = 1.1;
+        if (nextPos.y < DUCK_HALF.y) {
+          nextPos.y = DUCK_HALF.y;
           velY = 0;
           launchVel.multiplyScalar(0.3);
           grounded = true;
@@ -1993,15 +2007,15 @@
         nextPos = resolvePlayerCollisions(nextPos);
 
         duck.position.copy(nextPos);
-      }
 
-      // Walking waddle in 3rd person when moving (negated for coordinate convention)
-      if (thirdPersonMode && duckModel) {
-        const isMoving = move.lengthSq() > 0;
-        const waddle = isMoving && grounded
-          ? -Math.sin(performance.now() * 0.008 * speed) * 0.12
-          : 0;
-        duckModel.rotation.z = waddle;
+        // Walking waddle in 3rd person when moving (negated for coordinate convention)
+        if (thirdPersonMode && duckModel != null) {
+          const isMoving = move.lengthSq() > 0;
+          const waddle = isMoving && grounded
+            ? -Math.sin(performance.now() * 0.008 * speed) * 0.12
+            : 0;
+          duckModel.rotation.z = waddle;
+        }
       }
 
       // Send position to server
