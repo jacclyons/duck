@@ -4,10 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>duck</title>
+  <link href="https://fonts.googleapis.com/css2?family=Dokdo&display=swap" rel="stylesheet" />
   <style>
-    html, body { margin:0; height:100%; overflow:hidden; background:#0b1020; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    html, body { margin:0; height:100%; overflow:hidden; background:#0b1020; font-family: "Dokdo", system-ui, sans-serif; font-size: 20px; }
+    button, input, select, textarea, label, summary, kbd {
+      font-family: "Dokdo", system-ui, sans-serif;
+    }
+    #menu, #menu .card, #hud, #pauseOverlay, #pauseSidebar, #playerLabels, .playerLabel, #hint {
+      font-family: "Dokdo", system-ui, sans-serif;
+    }
     #hud {
-      position: fixed; left: 12px; top: 12px; z-index: 10;
+      position: fixed; left: 12px; top: 12px; z-index: 30; /* above pause overlay (25) so HUD stays visible when paused */
       color: rgba(255,255,255,0.92);
       background: #181818;
       border: 1px solid rgba(255,255,255,0.12);
@@ -21,6 +28,34 @@
     }
     #hud.online { display: block; }
     #hud b { display:block; margin-bottom: 6px; }
+    #hud .hud-room-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #hud .hudCopyBtn {
+      padding: 4px 10px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #181818;
+      background: #FFBE00;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #hud .hudCopyBtn:hover { filter: brightness(1.1); }
+    #hud .hudCopyBtn:active { transform: scale(0.98); }
+    .playerLabel {
+      position: absolute;
+      left: 0; top: 0;
+      transform: translate(-50%, -100%);
+      padding: 4px 10px;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: rgba(255,255,255,0.95);
+      background: rgba(0,0,0,0.4);
+      border-radius: 6px;
+      text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.8);
+      white-space: nowrap;
+      pointer-events: none;
+    }
     #crosshair {
       position: fixed; left:50%; top:50%; transform: translate(-50%, -50%);
       width: 14px; height: 14px; z-index: 9; pointer-events:none;
@@ -102,8 +137,8 @@
     #menu .controls kbd {
       display: inline-block;
       padding: 0.15em 0.45em;
-      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 0.75em;
+      font-family: "Dokdo", system-ui, sans-serif;
+      font-size: 1em;
       font-weight: 600;
       line-height: 1;
       color: rgba(255,255,255,0.95);
@@ -124,7 +159,7 @@
     }
     #menu .controls-dropdown summary {
       padding: 10px 14px;
-      font-size: 0.9rem;
+      font-size: 1.5rem;
       color: rgba(255,255,255,0.75);
       cursor: pointer;
       list-style: none;
@@ -142,7 +177,7 @@
       padding: 12px 14px 14px;
       background: #181818;
     }
-    #menu .status { margin-top: 16px; font-size: 0.9rem; opacity: 0.8; }
+    #menu .status { margin-top: 16px; font-size: 1rem; opacity: 0.8; }
     /* Pause overlay (blurred background) + sidebar */
     #pauseOverlay {
       position: fixed; inset: 0; z-index: 25;
@@ -187,19 +222,27 @@
 <body>
   <div id="menu">
     <div class="card">
-      <img src="duck.svg" alt="duck" class="menu-logo" />
-      <button id="createGameBtn" class="playBtn">Create game (host)</button>
+      <img src="duck.svg" alt="duck" class="menu-logo" /> <br><br>
+      <label style="display:block; text-align:left; margin-bottom:8px; font-size:1.5rem; opacity:0.9;">Ducktag</label>
+      <input id="ducktagInput" type="text" placeholder="Ducky1234" maxlength="24" style="width:100%; box-sizing:border-box; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:inherit; font-size:0.95rem; margin-bottom:14px;" />
+      <button id="createGameBtn" class="playBtn">NEW GAME (ONLINE)</button>
       <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
-        <input id="roomIdInput" type="text" placeholder="Room ID" style="flex:1; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:inherit; font-size:0.95rem;" maxlength="20" />
-        <button id="joinGameBtn" class="playBtn" style="background:rgba(255,255,255,0.2); color:inherit;">Join game</button>
+        <input id="roomIdInput" type="text" placeholder="Room ID" style="flex:1; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:inherit; font-size:0.95rem;" maxlength="4" />
+        <button id="joinGameBtn" class="playBtn" style="background:rgba(255,255,255,0.2); color:inherit;">JOIN</button>
       </div>
-      <button id="playOfflineBtn" class="playBtn" style="margin-top:10px; background:rgba(255,255,255,0.15); color:inherit;">Play Offline</button>
+      <button id="playOfflineBtn" class="playBtn" style="margin-top:10px; background:rgba(255,255,255,0.15); color:inherit;">PLAY OFFLINE</button>
       <details class="controls-dropdown">
         <summary>Controls</summary>
         <div class="controls-inner controls">
-          <kbd>WASD</kbd><span class="sep">•</span>  jump <kbd>Space</kbd><span class="sep">•</span> sprint<br/>
-          <kbd>E</kbd><span class="sep">•</span> grab <kbd>Wheel</kbd><span class="sep">•</span> pull/push <kbd>LMB</kbd><span class="sep">•</span> throw <kbd>RMB</kbd><span class="sep">•</span> drop <kbd>R</kbd><span class="sep">•</span> reset<br/>
-          <kbd>P</kbd><span class="sep">•</span> 3rd person <kbd>Shift</kbd><span class="sep">+</span><kbd>Space</kbd><span class="sep">•</span> telekinetic jump (hold to charge)
+          <kbd>WASD</kbd> move<br/>
+          jump <kbd>Space</kbd><br/>
+          sprint <kbd>Shift</kbd><br/>
+          <kbd>E</kbd> grab<br/>
+          <kbd>Wheel</kbd> pull/push<br/>
+          <kbd>LMB</kbd> throw <kbd>RMB</kbd> drop<br/>
+          <kbd>R</kbd> reset<br/>
+          <kbd>P</kbd> 3rd person<br/>
+          <kbd>Shift</kbd>+<kbd>Space</kbd> telekinetic jump (hold to charge)
         </div>
       </details>
       <div id="menuStatus" class="status">Click Play to join the battle</div>
@@ -207,13 +250,14 @@
   </div>
 
   <div id="hud">
-    <b>Room: <span id="hudRoom">—</span></b>
+    <b class="hud-room-row">Room: <span id="hudRoom">—</span> <button type="button" id="copyRoomBtn" class="hudCopyBtn">Copy</button></b>
     <div id="stats">Objects: 0 • Held: none • FPS: —</div>
   </div>
   <div id="crosshair"></div>
   <div id="chargeBar"><div id="chargeFill"></div></div>
   <div id="hint">Click to lock mouse • E to grab • Wheel to adjust distance • Hold LMB to charge throw</div>
 
+  <div id="playerLabels" style="position:fixed; inset:0; pointer-events:none; z-index:15;"></div>
   <div id="pauseOverlay">
     <div id="pauseSidebar">
       <h2>Paused</h2>
@@ -416,6 +460,12 @@
           if (players.has(msg.targetId)) net.sendTo(msg.targetId, { type: "hitBy", vx: msg.vx, vy: msg.vy, vz: msg.vz });
           return;
         }
+        if (type === "myDucktag") {
+          if (p) p.ducktag = msg.ducktag || "Ducky1234";
+          net.broadcast(null, { type: "playerDucktag", id, ducktag: (p && p.ducktag) || "Ducky1234" });
+          net.emit("playerDucktag", { id, ducktag: (p && p.ducktag) || "Ducky1234" });
+          return;
+        }
         if (type === "objectSync") {
           const obj = objects[msg.id];
           if (!obj || obj.heldBy !== null) return;
@@ -596,7 +646,7 @@
       net.myId = roomId;
       myId = roomId;
       net.hostState = {
-        players: new Map([[roomId, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color: DUCK_COLORS[0] }]]),
+        players: new Map([[roomId, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color: DUCK_COLORS[0], ducktag: myDucktag }]]),
         objects: generateObjectLayout(),
       };
       net.peer = new Peer(roomId, { secure: true, host: "0.peerjs.com", port: 443, path: "/" });
@@ -616,19 +666,20 @@
           const id = conn.peer;
           net.connections.set(id, conn);
           const color = getNextColor(net.hostState.players);
-          net.hostState.players.set(id, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color });
+          net.hostState.players.set(id, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color, ducktag: "Ducky1234" });
           conn.send({
             type: "init",
             yourId: id,
             players: Object.fromEntries([...net.hostState.players.entries()].map(([k, v]) => [k, { ...v, id: k }])),
             objects: net.hostState.objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, mass: o.mass, size: o.size, heldBy: o.heldBy })),
           });
-          net.broadcast(id, { type: "playerJoined", id, x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, color });
+          net.broadcast(id, { type: "playerJoined", id, x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, color, ducktag: "Ducky1234" });
           // Host view: show new player
-          otherPlayers.set(id, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color });
+          otherPlayers.set(id, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color, ducktag: "Ducky1234" });
           const mesh = createOtherPlayerDuck(id, color);
           mesh.position.set(0, 2, 18);
           otherPlayerMeshes.set(id, mesh);
+          addPlayerLabel(id, "Ducky1234");
           conn.on("data", (msg) => net.handleMessage(id, msg));
           conn.on("close", () => {
             const p = net.hostState.players.get(id);
@@ -666,12 +717,15 @@
         conn.on("open", () => {
           net.myId = net.peer.id;
           myId = net.peer.id;
+          const ducktagEl = document.getElementById("ducktagInput");
+          myDucktag = (ducktagEl && ducktagEl.value.trim()) || "Ducky1234";
           socket = {
             emit(type, payload) {
               const msg = typeof payload === "object" && payload !== null && !Array.isArray(payload) && !payload.type ? { type, ...payload } : { type, ...(payload !== undefined ? (type === "grab" || type === "drop" ? { objectId: payload } : payload) : {}) };
               net.send(msg);
             },
           };
+          socket.emit("myDucktag", { ducktag: myDucktag });
           conn.on("close", () => {
             menuStatus.textContent = "Host disconnected";
             net.connections.delete(hostId);
@@ -686,7 +740,10 @@
     }
 
     function randomRoomId() {
-      return "duck-" + Math.random().toString(36).slice(2, 10);
+      const chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+      let id = "";
+      for (let i = 0; i < 4; i++) id += chars[Math.floor(Math.random() * chars.length)];
+      return id;
     }
 
     let hadPointerLock = false; // true after user has entered game at least once
@@ -700,6 +757,13 @@
         hadPointerLock = true;
         menu.classList.add("hidden");
         if (pauseOverlay) pauseOverlay.classList.remove("visible");
+        // Show ducktag above local player (for offline, set from input)
+        if (!(socket && myId)) {
+          const ducktagEl = document.getElementById("ducktagInput");
+          myDucktag = (ducktagEl && ducktagEl.value.trim()) || "Ducky1234";
+        }
+        ensureSelfPlayerLabel();
+        if (selfPlayerLabelEl) selfPlayerLabelEl.textContent = myDucktag;
       } else {
         // Left pointer lock: if we were in game, show pause sidebar; else show main menu
         if (hadPointerLock && pauseOverlay) {
@@ -922,8 +986,10 @@
     // ---------------------------
     let socket = null; // compatibility adapter: set when Peer connected; socket.emit(type, data) -> net.send(...)
     let myId = null;
-    const otherPlayers = new Map(); // id -> { x, y, z, yaw, pitch, heldId, holdDistance, holdHeight }
+    let myDucktag = "Ducky1234";
+    const otherPlayers = new Map(); // id -> { x, y, z, yaw, pitch, heldId, holdDistance, holdHeight, ducktag }
     const otherPlayerMeshes = new Map(); // id -> THREE.Group (duck mesh)
+    const otherPlayerLabels = new Map(); // id -> HTMLElement (name label above head)
     const objectHeldBy = new Map(); // objectId -> playerId (for objects held by others)
     let heldPlayerId = null;       // when we're holding another player
     let grabbedBy = null;          // id of player holding us
@@ -952,12 +1018,40 @@
       return group;
     }
 
+    const playerLabelsContainer = document.getElementById("playerLabels");
+    const labelProjected = new THREE.Vector3();
+    let selfPlayerLabelEl = null; // label above local player (your ducktag)
+    function ensureSelfPlayerLabel() {
+      if (selfPlayerLabelEl) return;
+      selfPlayerLabelEl = document.createElement("div");
+      selfPlayerLabelEl.className = "playerLabel";
+      if (playerLabelsContainer) playerLabelsContainer.appendChild(selfPlayerLabelEl);
+    }
+    function addPlayerLabel(id, ducktag) {
+      const el = document.createElement("div");
+      el.className = "playerLabel";
+      el.textContent = ducktag || "Ducky1234";
+      if (playerLabelsContainer) playerLabelsContainer.appendChild(el);
+      otherPlayerLabels.set(id, el);
+    }
+    function removePlayerLabel(id) {
+      const el = otherPlayerLabels.get(id);
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+      otherPlayerLabels.delete(id);
+    }
+    function setPlayerLabelDucktag(id, ducktag) {
+      const el = otherPlayerLabels.get(id);
+      if (el) el.textContent = ducktag || "Ducky1234";
+    }
+
     net.onConnect = () => {
       const hud = document.getElementById("hud");
       const roomEl = document.getElementById("hudRoom");
       const roomCode = net.isHost ? net.myId : net.hostId;
       if (hud) hud.classList.add("online");
       if (roomEl && roomCode) roomEl.textContent = roomCode;
+      ensureSelfPlayerLabel();
+      if (selfPlayerLabelEl) selfPlayerLabelEl.textContent = myDucktag;
       menuStatus.textContent = "Connected! Locking pointer...";
       renderer.domElement.requestPointerLock();
     };
@@ -973,6 +1067,7 @@
           mesh.position.set(p.x, p.y, p.z);
           mesh.rotation.y = p.yaw;
           otherPlayerMeshes.set(id, mesh);
+          addPlayerLabel(id, p.ducktag);
         }
         for (const o of data.objects) {
           if (o.heldBy) objectHeldBy.set(o.id, o.heldBy);
@@ -988,10 +1083,12 @@
         const mesh = createOtherPlayerDuck(p.id, p.color);
         mesh.position.set(p.x, p.y, p.z);
         otherPlayerMeshes.set(p.id, mesh);
+        addPlayerLabel(p.id, p.ducktag);
       });
       net.on("playerLeft", (id) => {
         if (heldPlayerId === id) heldPlayerId = null;
         otherPlayers.delete(id);
+        removePlayerLabel(id);
         const mesh = otherPlayerMeshes.get(id);
         if (mesh) {
           const grabBox = mesh.userData.grabBox;
@@ -1005,6 +1102,11 @@
         for (const [objId, pid] of objectHeldBy) {
           if (pid === id) objectHeldBy.delete(objId);
         }
+      });
+      net.on("playerDucktag", (data) => {
+        const p = otherPlayers.get(data.id);
+        if (p) p.ducktag = data.ducktag;
+        setPlayerLabelDucktag(data.id, data.ducktag);
       });
       net.on("playerUpdate", (data) => {
         const { id, x, y, z, yaw, pitch, heldId, holdDistance, holdHeight } = data;
@@ -1096,6 +1198,8 @@
 
     // Menu buttons (attached after load so setupNetHandlers, otherPlayers, etc. exist)
     document.getElementById("createGameBtn").addEventListener("click", () => {
+      const ducktagEl = document.getElementById("ducktagInput");
+      myDucktag = (ducktagEl && ducktagEl.value.trim()) || "Ducky1234";
       menuStatus.textContent = "Creating room...";
       if (typeof Peer === "undefined") {
         menuStatus.textContent = "PeerJS failed to load. Check connection.";
@@ -1119,6 +1223,20 @@
       menuStatus.textContent = "Playing offline...";
       renderer.domElement.requestPointerLock();
     });
+
+    const copyRoomBtn = document.getElementById("copyRoomBtn");
+    if (copyRoomBtn) {
+      copyRoomBtn.addEventListener("click", () => {
+        const roomEl = document.getElementById("hudRoom");
+        const code = roomEl ? roomEl.textContent.trim() : (net.isHost ? net.myId : net.hostId) || "";
+        if (!code || code === "—") return;
+        navigator.clipboard.writeText(code).then(() => {
+          const label = copyRoomBtn.textContent;
+          copyRoomBtn.textContent = "Copied!";
+          setTimeout(() => { copyRoomBtn.textContent = label; }, 1500);
+        }).catch(() => {});
+      });
+    }
 
     // Player movement
     const keys = new Set();
@@ -2300,6 +2418,43 @@
       const dt = Math.min(0.033, clock.getDelta());
       if (pointerLocked) step(dt);
       renderer.render(scene, camera);
+      // Project name labels to screen (other players + local player)
+      if (camera && playerLabelsContainer) {
+        for (const [id, el] of otherPlayerLabels) {
+          const mesh = otherPlayerMeshes.get(id);
+          if (!mesh) continue;
+          labelProjected.set(mesh.position.x, mesh.position.y + 1.85, mesh.position.z);
+          labelProjected.project(camera);
+          const x = (labelProjected.x * 0.5 + 0.5) * window.innerWidth;
+          const y = (-labelProjected.y * 0.5 + 0.5) * window.innerHeight;
+          if (labelProjected.z > 1) { el.style.display = "none"; continue; }
+          el.style.display = "";
+          el.style.left = x + "px";
+          el.style.top = y + "px";
+        }
+        // Local player label: in 1st person show at top-center; in 3rd person project above duck
+        if (selfPlayerLabelEl && duck) {
+          if (thirdPersonMode) {
+            labelProjected.set(duck.position.x, duck.position.y + 1.85, duck.position.z);
+            labelProjected.project(camera);
+            const x = (labelProjected.x * 0.5 + 0.5) * window.innerWidth;
+            const y = (-labelProjected.y * 0.5 + 0.5) * window.innerHeight;
+            if (labelProjected.z <= 1) {
+              selfPlayerLabelEl.style.display = "";
+              selfPlayerLabelEl.style.left = x + "px";
+              selfPlayerLabelEl.style.top = y + "px";
+              selfPlayerLabelEl.style.transform = "translate(-50%, -100%)";
+            } else {
+              selfPlayerLabelEl.style.display = "none";
+            }
+          } else {
+            selfPlayerLabelEl.style.display = "";
+            selfPlayerLabelEl.style.left = "50%";
+            selfPlayerLabelEl.style.top = "14px";
+            selfPlayerLabelEl.style.transform = "translate(-50%, 0)";
+          }
+        }
+      }
       requestAnimationFrame(animate);
     }
     animate();
