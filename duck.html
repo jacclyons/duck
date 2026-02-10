@@ -1158,6 +1158,7 @@
         launchVel.set(vx, 0, vz);
         velY = vy;
         grounded = false;
+        wasHitOrThrown = true;
         tumblePitch += vy * 0.04;
         tumbleRoll += (vx + vz) * 0.03;
       });
@@ -1166,6 +1167,7 @@
         launchVel.addScaledVector(new THREE.Vector3(vx, 0, vz), 1);
         velY += vy;
         grounded = false;
+        wasHitOrThrown = true;
         tumblePitch += vy * 0.035;
         tumbleRoll += (vx + vz) * 0.025;
       });
@@ -1260,6 +1262,7 @@
     let grounded = false;
     let tumblePitch = 0;
     let tumbleRoll = 0;
+    let wasHitOrThrown = false;
     const TUMBLE_MAX = 1.25;
     let envUpdateTick = 0; // host: broadcast env every N frames
     const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
@@ -1569,7 +1572,9 @@
         const strength = CHARGE_MIN_STRENGTH + frac * (CHARGE_MAX_STRENGTH - CHARGE_MIN_STRENGTH);
         const dir = forwardVector().clone();
         const impulse = dir.multiplyScalar(strength);
-        if (socket) socket.emit("throwPlayer", { grabbedId: heldPlayerId, vx: impulse.x, vy: impulse.y, vz: impulse.z });
+        const throwMsg = { grabbedId: heldPlayerId, vx: impulse.x, vy: impulse.y, vz: impulse.z };
+        if (socket) socket.emit("throwPlayer", throwMsg);
+        if (net.isHost) net.handleHostMessage(net.myId, { type: "throwPlayer", ...throwMsg });
         heldPlayerId = null;
         focus.visible = false;
         sparkleGroup.visible = false;
@@ -1629,6 +1634,7 @@
       if (e.button === 2) { // right click drop
         if (heldPlayerId) {
           if (socket) socket.emit("releasePlayer");
+          if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
           heldPlayerId = null;
           focus.visible = false;
           sparkleGroup.visible = false;
@@ -1675,7 +1681,10 @@
     function updateHolding() {
       holding = keys.has("KeyE");
       if (!holding) {
-        if (heldPlayerId && socket) socket.emit("releasePlayer");
+        if (heldPlayerId && socket) {
+          socket.emit("releasePlayer");
+          if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
+        }
         heldPlayerId = null;
         return;
       }
@@ -1687,7 +1696,9 @@
           const otherId = obj.userData.otherPlayerId;
           if (otherId && socket) {
             heldPlayerId = otherId;
-            socket.emit("grabPlayer", otherId);
+            const grabMsg = { grabbedId: otherId };
+            socket.emit("grabPlayer", grabMsg);
+            if (net.isHost) net.handleHostMessage(net.myId, { type: "grabPlayer", ...grabMsg });
             const p = otherPlayers.get(otherId);
             if (p) {
               holdDistance = Math.max(2, Math.min(40, new THREE.Vector3(p.x - duck.position.x, 0, p.z - duck.position.z).length()));
@@ -2142,7 +2153,10 @@
       }
       releaseHeldNPC();
       held = null;
-      if (heldPlayerId && socket) socket.emit("releasePlayer");
+      if (heldPlayerId && socket) {
+        socket.emit("releasePlayer");
+        if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
+      }
       heldPlayerId = null;
       focus.visible = false;
       sparkleGroup.visible = false;
@@ -2154,10 +2168,14 @@
       launchVel.set(0, 0, 0);
       tumblePitch = 0;
       tumbleRoll = 0;
+      wasHitOrThrown = false;
       chargingJump = false;
       releaseHeldNPC();
       held = null;
-      if (heldPlayerId && socket) socket.emit("releasePlayer");
+      if (heldPlayerId && socket) {
+        socket.emit("releasePlayer");
+        if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
+      }
       heldPlayerId = null;
       grabbedBy = null;
       focus.visible = false;
@@ -2239,9 +2257,13 @@
           launchVel.set(0, 0, 0);
           tumblePitch = 0;
           tumbleRoll = 0;
+          wasHitOrThrown = false;
           releaseHeldNPC();
           held = null;
-          if (heldPlayerId && socket) socket.emit("releasePlayer");
+          if (heldPlayerId && socket) {
+            socket.emit("releasePlayer");
+            if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
+          }
           heldPlayerId = null;
           focus.visible = false;
           sparkleGroup.visible = false;
@@ -2256,11 +2278,12 @@
           duckModel.rotation.z = waddle;
         }
 
-        // Tumble physics: accumulate when airborne, decay when grounded
+        // Tumble physics: only when hit/thrown (not on normal jump or telekinetic jump), decay when grounded
         if (grounded) {
           tumblePitch *= 0.88;
           tumbleRoll *= 0.88;
-        } else {
+          wasHitOrThrown = false;
+        } else if (wasHitOrThrown || Math.abs(tumblePitch) + Math.abs(tumbleRoll) > 0.15) {
           tumblePitch += velY * dt * 0.4;
           tumbleRoll += (launchVel.x - launchVel.z) * dt * 0.28;
         }
