@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>duck</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link href="https://fonts.googleapis.com/css2?family=Dokdo&display=swap" rel="stylesheet" />
   <style>
     html, body { margin:0; height:100%; overflow:hidden; background:#0b1020; font-family: "Dokdo", system-ui, sans-serif; font-size: 20px; }
@@ -283,6 +284,8 @@
     // ---------------------------
     // Socket.io multiplayer (server-authoritative)
     // ---------------------------
+    // When frontend is on Vercel (static), set this to your Node server URL (e.g. Railway, Render).
+    const SOCKET_SERVER_URL = "";
     const WORLD_SEED = 12345;
     function seededRandom(seed) {
       return function () {
@@ -482,7 +485,7 @@
         menuStatus.textContent = "Socket.io failed to load. Check connection.";
         return;
       }
-      socket = io();
+      socket = io(SOCKET_SERVER_URL || undefined);
       setupSocketHandlers();
       socket.emit("createRoom", { ducktag: myDucktag });
     }
@@ -494,7 +497,7 @@
       }
       roomId = roomIdToJoin;
       if (!socket || !socket.connected) {
-        socket = io();
+        socket = io(SOCKET_SERVER_URL || undefined);
       }
       setupSocketHandlers();
       socket.emit("joinRoom", { roomId: roomIdToJoin, ducktag: myDucktag });
