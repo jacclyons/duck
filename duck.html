@@ -258,7 +258,6 @@
   </div>
   <div id="crosshair"></div>
   <div id="chargeBar"><div id="chargeFill"></div></div>
-  <div id="hint">Click to lock mouse • E to grab • Wheel to adjust distance • Hold LMB to charge throw</div>
 
   <div id="playerLabels" style="position:fixed; inset:0; pointer-events:none; z-index:15;"></div>
   <div id="pauseOverlay">
@@ -422,6 +421,11 @@
       a.play().catch(() => {});
     }
 
+    // BGM — plays when in gameplay (pointer locked), loops at 35% volume
+    const bgm = new Audio("duckBGM.mp3");
+    bgm.loop = true;
+    bgm.volume = 0.35;
+
     // ---------------------------
     // Basic setup
     // ---------------------------
@@ -522,6 +526,7 @@
         hadPointerLock = true;
         menu.classList.add("hidden");
         if (pauseOverlay) pauseOverlay.classList.remove("visible");
+        bgm.play().catch(() => {});
         // Show ducktag above local player (for offline, set from input)
         if (!(socket && myId)) {
           const ducktagEl = document.getElementById("ducktagInput");
@@ -530,6 +535,7 @@
         ensureSelfPlayerLabel();
         if (selfPlayerLabelEl) selfPlayerLabelEl.textContent = myDucktag;
       } else {
+        bgm.pause();
         // Left pointer lock: if we were in game, show pause sidebar; else show main menu
         if (hadPointerLock && pauseOverlay) {
           pauseOverlay.classList.add("visible");
