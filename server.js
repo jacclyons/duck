@@ -5,7 +5,18 @@ const path = require("path");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  cors: {
+    origin: [
+      "https://duck-trueos.vercel.app",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "http://localhost:8080",
+      "http://127.0.0.1:8080",
+    ],
+    methods: ["GET", "POST"],
+  },
+});
 
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "duck.html")));
 app.use(express.static(path.join(__dirname)));
