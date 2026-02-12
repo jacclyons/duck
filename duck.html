@@ -648,7 +648,7 @@
     // SFX
     // ---------------------------
     const sfx = {};
-    ["grab", "throw", "shatter", "scream", "scream2", "ow", "ow2"].forEach((name) => {
+    ["grab", "throw", "shatter", "scream", "scream2"].forEach((name) => {
       const a = new Audio(`sfx/${name}.mp3`);
       a.volume = 0.7;
       sfx[name] = a;
@@ -1399,7 +1399,6 @@
     let tumblePitch = 0;
     let tumbleRoll = 0;
     let wasHitOrThrown = false;
-    let playerLastOwTime = 0;
     const TUMBLE_MAX = 1.25;
     let envUpdateTick = 0; // host: broadcast env every N frames
     const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
@@ -2509,12 +2508,6 @@
             npc.vel.add(knockback);
             // Reduce the object's velocity
             m.userData.vel.multiplyScalar(0.3);
-            // Play "ow" when an object hits an NPC (cooldown per NPC + grace period after spawn)
-            const t = performance.now();
-            if (t - gameStartTime > 1500 && (npc.lastOwTime == null || t - npc.lastOwTime > 350)) {
-              npc.lastOwTime = t;
-              playSfx(Math.random() < 0.5 ? "ow" : "ow2");
-            }
             break; // one NPC per object per frame
           }
         }
@@ -2560,11 +2553,6 @@
         tumbleRoll += (knock.x + knock.z) * 0.025;
         m.userData.vel.multiplyScalar(0.25);
         if (socket && myId && !net.isHost) socket.emit("objectHitPlayer", { objectIndex: i });
-        const t = performance.now();
-        if (t - gameStartTime > 1500 && (playerLastOwTime == null || t - playerLastOwTime > 350)) {
-          playerLastOwTime = t;
-          playSfx(Math.random() < 0.5 ? "ow" : "ow2");
-        }
         break;
       }
 
@@ -2587,11 +2575,6 @@
         tumbleRoll += (knock.x + knock.z) * 0.025;
         npc.vel.multiplyScalar(0.35);
         if (socket && myId && !net.isHost) socket.emit("npcHitPlayer", { npcIndex: ni });
-        const t = performance.now();
-        if (t - gameStartTime > 1500 && (playerLastOwTime == null || t - playerLastOwTime > 350)) {
-          playerLastOwTime = t;
-          playSfx(Math.random() < 0.5 ? "ow" : "ow2");
-        }
         break;
       }
 
