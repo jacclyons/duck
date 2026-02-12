@@ -1003,29 +1003,32 @@
         buildings.splice(idx, 1);
       });
       socket.off("envUpdate").on("envUpdate", (data) => {
+        const now = performance.now();
         if (data.objects) {
           for (const o of data.objects) {
-            if (objectHeldBy.has(o.id)) continue; // keep client interpolation for held objects
+            if (objectHeldBy.has(o.id)) continue; // held by other player
             const m = dynamic[o.id];
             if (!m) continue;
-            // Store server target for gentle position correction
+            if (m === held) continue; // local player is holding this — ignore server
+            // Skip correction if recently thrown/dropped (grace period)
+            if (m.userData.localAuthorityUntil && now < m.userData.localAuthorityUntil) continue;
+            // Store server target for gentle correction in game loop
             m.userData.serverTarget = { x: o.x, y: o.y, z: o.z };
-            // Blend velocity toward server's (don't snap — preserves local momentum feel)
+            // Only blend velocity if object is slow (resting) — don't fight active throws
             const v = m.userData.vel;
-            v.x += ((o.vx || 0) - v.x) * 0.3;
-            v.y += ((o.vy || 0) - v.y) * 0.3;
-            v.z += ((o.vz || 0) - v.z) * 0.3;
+            const localSpeed = v.length();
+            const serverSpeed = Math.sqrt((o.vx||0)**2 + (o.vy||0)**2 + (o.vz||0)**2);
+            if (localSpeed < 3 && serverSpeed < 3) {
+              // Both at rest — snap velocity
+              v.set(o.vx || 0, o.vy || 0, o.vz || 0);
+            }
+            // If moving fast, trust local physics (server will catch up)
           }
         }
         if (data.npcs && data.npcs.length === npcDucks.length) {
           for (let i = 0; i < npcDucks.length; i++) {
             const n = data.npcs[i];
             npcDucks[i].serverTarget = { x: n.x, y: n.y, z: n.z };
-            // Blend NPC velocity
-            const nv = npcDucks[i].vel;
-            nv.x += ((n.vx || 0) - nv.x) * 0.3;
-            nv.y += ((n.vy || 0) - nv.y) * 0.3;
-            nv.z += ((n.vz || 0) - nv.z) * 0.3;
           }
         }
       });
@@ -1414,6 +1417,9 @@
       const dir = forwardVector().clone();
       const impulse = dir.multiplyScalar(strength);
       held.userData.vel.add(impulse);
+      // Clear server target and give local authority so throw isn't rubberbanded
+      held.userData.serverTarget = null;
+      held.userData.localAuthorityUntil = performance.now() + 1000; // 1s grace
       const objectId = dynamic.indexOf(held);
       if (objectId >= 0 && socket) {
         const pos = held.position;
@@ -1462,6 +1468,9 @@
           chargeBarEl.classList.remove("visible");
           chargeFillEl.style.width = "0%";
         } else if (held) {
+          // Clear server target so drop doesn't rubberband
+          held.userData.serverTarget = null;
+          held.userData.localAuthorityUntil = performance.now() + 500; // 0.5s grace
           const objectId = dynamic.indexOf(held);
           if (objectId >= 0 && socket) socket.emit("drop", objectId);
           releaseHeldNPC();
@@ -1535,6 +1544,9 @@
             } else {
               held = obj;
             }
+            // Stop server correction from fighting our telekinesis
+            held.userData.serverTarget = null;
+            held.userData.localAuthorityUntil = null;
             const objectId = dynamic.indexOf(held);
             if (objectId >= 0 && socket) socket.emit("grab", objectId);
             focus.visible = true;
@@ -2249,8 +2261,8 @@
         updateNPCs(dt);
       } else if (socket && myId) {
         // Online: run FULL offline-quality physics locally for instant feedback
-        // Server envUpdate gently corrects any desync (blend, don't snap)
-        const serverLerp = 0.15; // gentle per-frame correction toward server
+        // Server envUpdate gently corrects drift; local physics are trusted for responsiveness
+        const now = performance.now();
 
         // Dynamic props — identical to offline physics
         for (let i = 0; i < dynamic.length; i++) {
@@ -2261,12 +2273,16 @@
           m.userData.vel.multiplyScalar(DAMPING);
           m.position.addScaledVector(m.userData.vel, dt);
 
-          // Gentle server correction when available
+          // Gentle server correction — only when object is slow/resting, skip during local authority
           const st = m.userData.serverTarget;
-          if (st) {
-            m.position.x += (st.x - m.position.x) * serverLerp;
-            m.position.y += (st.y - m.position.y) * serverLerp;
-            m.position.z += (st.z - m.position.z) * serverLerp;
+          if (st && !(m.userData.localAuthorityUntil && now < m.userData.localAuthorityUntil)) {
+            const drift = Math.abs(st.x - m.position.x) + Math.abs(st.y - m.position.y) + Math.abs(st.z - m.position.z);
+            const speed = m.userData.vel.length();
+            // Stronger correction when at rest + big drift; minimal when moving fast
+            const correctionStrength = speed > 5 ? 0.02 : (drift > 3 ? 0.1 : 0.05);
+            m.position.x += (st.x - m.position.x) * correctionStrength;
+            m.position.y += (st.y - m.position.y) * correctionStrength;
+            m.position.z += (st.z - m.position.z) * correctionStrength;
           }
           checkBuildingDestruction(m);
           resolveDynamicCollisions(m);
@@ -2311,9 +2327,11 @@
         for (const npc of npcDucks) {
           const st = npc.serverTarget;
           if (st) {
-            npc.mesh.position.x += (st.x - npc.mesh.position.x) * serverLerp;
-            npc.mesh.position.y += (st.y - npc.mesh.position.y) * serverLerp;
-            npc.mesh.position.z += (st.z - npc.mesh.position.z) * serverLerp;
+            const speed = npc.vel.length();
+            const corr = speed > 5 ? 0.02 : 0.05; // light touch when moving
+            npc.mesh.position.x += (st.x - npc.mesh.position.x) * corr;
+            npc.mesh.position.y += (st.y - npc.mesh.position.y) * corr;
+            npc.mesh.position.z += (st.z - npc.mesh.position.z) * corr;
           }
         }
       }
