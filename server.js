@@ -560,6 +560,10 @@ io.on("connection", (socket) => {
         room.players.get(grabbedId).grabbedBy = null;
         io.to(roomId).emit("playerReleased", { grabberId: socket.id, grabbedId });
       }
+      // Release any NPCs this player was holding
+      for (const npc of room.npcs) {
+        if (npc.grabbedBy === socket.id) { npc.grabbed = false; npc.grabbedBy = null; }
+      }
       room.players.delete(socket.id);
       io.to(roomId).emit("playerLeft", socket.id);
       if (room.players.size === 0) rooms.delete(roomId);
@@ -716,6 +720,56 @@ io.on("connection", (socket) => {
     io.to(targetId).emit("hitBy", { vx, vy, vz });
   });
 
+  // ── NPC grab / throw / drop ──────────────────────────────────────
+  socket.on("grabNpc", (npcIdx) => {
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    const npc = room?.npcs[npcIdx];
+    if (!npc || npc.grabbed) return;
+    npc.grabbed = true;
+    npc.grabbedBy = socket.id;
+    socket.to(roomId).emit("npcGrabbed", { npcIdx, playerId: socket.id });
+  });
+
+  socket.on("throwNpc", (data) => {
+    const { npcIdx, x, y, z, vx, vy, vz } = data;
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    const npc = room?.npcs[npcIdx];
+    if (!npc || npc.grabbedBy !== socket.id) return;
+    npc.grabbed = false;
+    npc.grabbedBy = null;
+    npc.x = x; npc.y = y; npc.z = z;
+    npc.vx = vx; npc.vy = vy; npc.vz = vz;
+    socket.to(roomId).emit("npcThrown", { npcIdx, x, y, z, vx, vy, vz });
+  });
+
+  socket.on("dropNpc", (npcIdx) => {
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    const npc = room?.npcs[npcIdx];
+    if (!npc || npc.grabbedBy !== socket.id) return;
+    npc.grabbed = false;
+    npc.grabbedBy = null;
+    socket.to(roomId).emit("npcDropped", { npcIdx });
+  });
+
+  socket.on("heldNpcPos", (data) => {
+    const { npcIdx, x, y, z } = data;
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    const npc = room?.npcs[npcIdx];
+    if (!npc || npc.grabbedBy !== socket.id) return;
+    // Update server state so envUpdate doesn't fight
+    npc.x = x; npc.y = y; npc.z = z;
+    npc.vx = 0; npc.vy = 0; npc.vz = 0;
+    socket.to(roomId).emit("heldNpcPos", { npcIdx, x, y, z });
+  });
+
   socket.on("objectHitPlayer", (data) => {
     const { objectIndex } = data;
     const roomId = socket.roomId;
@@ -773,6 +827,10 @@ io.on("connection", (socket) => {
       if (grabbedId) {
         room.players.get(grabbedId).grabbedBy = null;
         io.to(roomId).emit("playerReleased", { grabberId: socket.id, grabbedId });
+      }
+      // Release any NPCs this player was holding
+      for (const npc of room.npcs) {
+        if (npc.grabbedBy === socket.id) { npc.grabbed = false; npc.grabbedBy = null; }
       }
       room.players.delete(socket.id);
       io.to(roomId).emit("playerLeft", socket.id);

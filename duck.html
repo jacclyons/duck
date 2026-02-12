@@ -1040,9 +1040,47 @@
         }
         if (data.npcs && data.npcs.length === npcDucks.length) {
           for (let i = 0; i < npcDucks.length; i++) {
+            const npc = npcDucks[i];
             const n = data.npcs[i];
-            npcDucks[i].serverTarget = { x: n.x, y: n.y, z: n.z };
+            // Skip NPCs the local player is holding
+            if (held && held.userData?.npc === npc) continue;
+            // Skip NPCs with local authority (recently thrown/dropped)
+            if (npc.localAuthorityUntil && now < npc.localAuthorityUntil) continue;
+            npc.serverTarget = { x: n.x, y: n.y, z: n.z };
           }
+        }
+      });
+
+      // ── NPC multiplayer events ──────────────────────────────────────
+      socket.off("npcGrabbed").on("npcGrabbed", (data) => {
+        const npc = npcDucks[data.npcIdx];
+        if (npc) npc.grabbed = true;
+      });
+      socket.off("npcThrown").on("npcThrown", (data) => {
+        const npc = npcDucks[data.npcIdx];
+        if (npc) {
+          npc.grabbed = false;
+          npc.mesh.position.set(data.x, data.y, data.z);
+          npc.vel.set(data.vx, data.vy, data.vz);
+          npc.serverTarget = null;
+          npc.localAuthorityUntil = null; // let server correct after throw
+        }
+      });
+      socket.off("npcDropped").on("npcDropped", (data) => {
+        const npc = npcDucks[data.npcIdx];
+        if (npc) {
+          npc.grabbed = false;
+          npc.serverTarget = null;
+        }
+      });
+      socket.off("heldNpcPos").on("heldNpcPos", (data) => {
+        const npc = npcDucks[data.npcIdx];
+        if (npc && !(held && held.userData?.npc === npc)) {
+          // Smooth lerp toward holder's position
+          npc.mesh.position.x += (data.x - npc.mesh.position.x) * 0.5;
+          npc.mesh.position.y += (data.y - npc.mesh.position.y) * 0.5;
+          npc.mesh.position.z += (data.z - npc.mesh.position.z) * 0.5;
+          npc.vel.set(0, 0, 0);
         }
       });
     }
@@ -1428,7 +1466,8 @@
         return;
       }
       playSfx("throw");
-      if (held.userData?.npc) playSfx(Math.random() < 0.5 ? "scream" : "scream2");
+      const isNpc = !!held.userData?.npc;
+      if (isNpc) playSfx(Math.random() < 0.5 ? "scream" : "scream2");
       const frac = getChargeFraction();
       const strength = CHARGE_MIN_STRENGTH + frac * (CHARGE_MAX_STRENGTH - CHARGE_MIN_STRENGTH);
       const dir = forwardVector().clone();
@@ -1437,10 +1476,20 @@
       // Clear server target and give local authority so throw isn't rubberbanded
       held.userData.serverTarget = null;
       held.userData.localAuthorityUntil = performance.now() + 1000; // 1s grace
-      const objectId = dynamic.indexOf(held);
-      if (objectId >= 0 && socket) {
-        const pos = held.position;
-        socket.emit("throw", { objectId, x: pos.x, y: pos.y, z: pos.z, vx: impulse.x, vy: impulse.y, vz: impulse.z });
+      if (isNpc) {
+        const npcIdx = npcDucks.indexOf(held.userData.npc);
+        if (npcIdx >= 0 && socket) {
+          const pos = held.userData.npc.mesh.position;
+          socket.emit("throwNpc", { npcIdx, x: pos.x, y: pos.y, z: pos.z, vx: impulse.x, vy: impulse.y, vz: impulse.z });
+        }
+        // Set local authority on the NPC so server correction doesn't fight the throw
+        held.userData.npc.localAuthorityUntil = performance.now() + 1000;
+      } else {
+        const objectId = dynamic.indexOf(held);
+        if (objectId >= 0 && socket) {
+          const pos = held.position;
+          socket.emit("throw", { objectId, x: pos.x, y: pos.y, z: pos.z, vx: impulse.x, vy: impulse.y, vz: impulse.z });
+        }
       }
       releaseHeldNPC();
       held = null;
@@ -1488,8 +1537,14 @@
           // Clear server target so drop doesn't rubberband
           held.userData.serverTarget = null;
           held.userData.localAuthorityUntil = performance.now() + 500; // 0.5s grace
-          const objectId = dynamic.indexOf(held);
-          if (objectId >= 0 && socket) socket.emit("drop", objectId);
+          if (held.userData?.npc) {
+            const npcIdx = npcDucks.indexOf(held.userData.npc);
+            if (npcIdx >= 0 && socket) socket.emit("dropNpc", npcIdx);
+            held.userData.npc.localAuthorityUntil = performance.now() + 500;
+          } else {
+            const objectId = dynamic.indexOf(held);
+            if (objectId >= 0 && socket) socket.emit("drop", objectId);
+          }
           releaseHeldNPC();
           held = null;
           focus.visible = false;
@@ -1558,14 +1613,17 @@
               held.userData.mass = 1.5;
               held.userData.npc = npc;
               npc.grabbed = true;
+              // Tell server this NPC is grabbed
+              const npcIdx = npcDucks.indexOf(npc);
+              if (npcIdx >= 0 && socket) socket.emit("grabNpc", npcIdx);
             } else {
               held = obj;
+              const objectId = dynamic.indexOf(held);
+              if (objectId >= 0 && socket) socket.emit("grab", objectId);
             }
             // Stop server correction from fighting our telekinesis
             held.userData.serverTarget = null;
             held.userData.localAuthorityUntil = null;
-            const objectId = dynamic.indexOf(held);
-            if (objectId >= 0 && socket) socket.emit("grab", objectId);
             focus.visible = true;
             const grabPos = held.parent === scene ? held.position : held.getWorldPosition(new THREE.Vector3());
             const grabDist = grabPos.clone().sub(duck.position).length();
@@ -1595,17 +1653,30 @@
       held.position.lerp(target, lerp);
       held.userData.vel.set(0, 0, 0);
 
-      // Tell other clients where this held object is (so telekinesis looks smooth for everyone)
-      const objectId = dynamic.indexOf(held);
-      if (objectId >= 0 && socket) {
+      // Tell other clients where this held thing is (so telekinesis looks smooth for everyone)
+      if (socket) {
         if (!applyTelekinesis._lastSend) applyTelekinesis._lastSend = 0;
         const now = performance.now();
         if (now - applyTelekinesis._lastSend > 50) { // 20Hz
           applyTelekinesis._lastSend = now;
-          socket.emit("heldObjectPos", {
-            objectId,
-            x: held.position.x, y: held.position.y, z: held.position.z,
-          });
+          const npc = held.userData?.npc;
+          if (npc) {
+            const npcIdx = npcDucks.indexOf(npc);
+            if (npcIdx >= 0) {
+              socket.emit("heldNpcPos", {
+                npcIdx,
+                x: held.position.x, y: held.position.y, z: held.position.z,
+              });
+            }
+          } else {
+            const objectId = dynamic.indexOf(held);
+            if (objectId >= 0) {
+              socket.emit("heldObjectPos", {
+                objectId,
+                x: held.position.x, y: held.position.y, z: held.position.z,
+              });
+            }
+          }
         }
       }
 
