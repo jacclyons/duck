@@ -5,16 +5,23 @@ const path = require("path");
 
 const app = express();
 const server = http.createServer(app);
+const ALLOWED_ORIGINS = [
+  "https://duck-trueos.vercel.app",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:8080",
+  "http://127.0.0.1:8080",
+];
 const io = new Server(server, {
   cors: {
-    origin: [
-      "https://duck-trueos.vercel.app",
-      "http://localhost:3000",
-      "http://127.0.0.1:3000",
-      "http://localhost:8080",
-      "http://127.0.0.1:8080",
-    ],
+    origin: (origin, callback) => {
+      const normalized = origin ? origin.replace(/\/$/, "") : "";
+      const allowed = ALLOWED_ORIGINS.some((o) => o.replace(/\/$/, "") === normalized);
+      if (!origin || allowed) return callback(null, origin || true);
+      callback(new Error("Not allowed by CORS"));
+    },
     methods: ["GET", "POST"],
+    credentials: true,
   },
 });
 
