@@ -275,13 +275,13 @@
       }
     }
   </script>
-  <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
   <script type="module">
     import * as THREE from "three";
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
     // ---------------------------
-    // PeerJS multiplayer (P2P via https://peerjs.com/)
+    // Socket.io multiplayer (server-authoritative)
     // ---------------------------
     const WORLD_SEED = 12345;
     function seededRandom(seed) {
@@ -322,249 +322,6 @@
       }
       return objects;
     }
-    const DUCK_COLORS = [0xf5d547, 0x7dd3fc, 0xa3e635, 0xfb7185, 0xc084fc];
-    function getNextColor(players) {
-      const used = new Set([...players.values()].map((p) => p.color));
-      for (const c of DUCK_COLORS) {
-        if (!used.has(c)) return c;
-      }
-      return DUCK_COLORS[players.size % DUCK_COLORS.length];
-    }
-
-    const net = {
-      peer: null,
-      isHost: false,
-      myId: null,
-      connections: new Map(),
-      hostState: null,
-      allPeerIds: new Set(),
-      messageHandlers: new Map(),
-      onConnect: null,
-      onConnectError: null,
-      send(msg) {
-        if (net.isHost) {
-          net.connections.forEach((conn) => conn.send(msg));
-        } else {
-          const c = net.connections.get(net.hostId);
-          if (c && c.open) c.send(msg);
-        }
-      },
-      sendTo(peerId, msg) {
-        const c = net.connections.get(peerId);
-        if (c && c.open) c.send(msg);
-      },
-      broadcast(excludeId, msg) {
-        net.connections.forEach((conn, peerId) => {
-          if (peerId !== excludeId && conn.open) conn.send(msg);
-        });
-      },
-      on(type, handler) {
-        if (!net.messageHandlers.has(type)) net.messageHandlers.set(type, []);
-        net.messageHandlers.get(type).push(handler);
-      },
-      emit(type, data) {
-        const handlers = net.messageHandlers.get(type);
-        if (handlers) handlers.forEach((h) => h(data));
-      },
-      handleMessage(fromId, msg) {
-        if (!msg || !msg.type) return;
-        if (net.isHost) net.handleHostMessage(fromId, msg);
-        else net.emit(msg.type, msg);
-      },
-      handleHostMessage(fromId, msg) {
-        const { type } = msg;
-        const players = net.hostState.players;
-        const objects = net.hostState.objects;
-        const id = fromId;
-        let p = players.get(id);
-        const simulatorId = net.allPeerIds.size ? [...net.allPeerIds].sort()[0] : net.myId;
-
-        if (type === "envUpdate") {
-          if (fromId !== simulatorId) return;
-          if (msg.objects) {
-            for (const o of msg.objects) {
-              const obj = objects[o.id];
-              if (obj) {
-                obj.x = o.x; obj.y = o.y; obj.z = o.z;
-                obj.vx = o.vx ?? 0; obj.vy = o.vy ?? 0; obj.vz = o.vz ?? 0;
-                obj.heldBy = o.heldBy ?? null;
-              }
-              const m = typeof dynamic !== "undefined" && dynamic[o.id];
-              if (m && !objectHeldBy.has(o.id)) {
-                m.position.set(o.x, o.y, o.z);
-                m.userData.vel.set(o.vx || 0, o.vy || 0, o.vz || 0);
-              }
-            }
-          }
-          if (msg.npcs && typeof npcDucks !== "undefined" && msg.npcs.length === npcDucks.length) {
-            for (let i = 0; i < npcDucks.length; i++) {
-              const n = msg.npcs[i];
-              npcDucks[i].mesh.position.set(n.x, n.y, n.z);
-              npcDucks[i].vel.set(n.vx || 0, n.vy || 0, n.vz || 0);
-            }
-          }
-          net.broadcast(fromId, msg);
-          net.emit("envUpdate", msg);
-          return;
-        }
-        if (type === "worldReset") {
-          if (fromId !== simulatorId) return;
-          if (msg.objects && msg.objects.length) {
-            net.hostState.objects = msg.objects;
-            const payload = { type: "worldReset", objects: msg.objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, heldBy: o.heldBy })) };
-            net.broadcast(null, payload);
-            applyWorldReset(net.hostState.objects);
-          }
-          return;
-        }
-        if (type === "buildingDestroyed") {
-          if (fromId !== simulatorId) return;
-          net.broadcast(null, msg);
-          net.emit("buildingDestroyed", msg);
-          return;
-        }
-        if (type === "objectHitPlayer" && simulatorId !== net.myId) {
-          net.sendTo(simulatorId, msg);
-          return;
-        }
-        if (type === "npcHitPlayer" && simulatorId !== net.myId) {
-          net.sendTo(simulatorId, msg);
-          return;
-        }
-
-        if (type === "playerUpdate") {
-          if (!p) return;
-          p.x = msg.x;
-          p.y = msg.y;
-          p.z = msg.z;
-          p.yaw = msg.yaw;
-          p.pitch = msg.pitch;
-          p.velY = msg.velY ?? p.velY;
-          p.holdDistance = msg.holdDistance;
-          p.holdHeight = msg.holdHeight;
-          net.broadcast(null, { type: "playerUpdate", id, ...msg });
-          net.emit("playerUpdate", { id, ...msg }); // host view sync
-          if (msg.heldPlayerId) {
-            const held = players.get(msg.heldPlayerId);
-            if (held && held.grabbedBy === id) {
-              const dist = msg.holdDistance ?? 6;
-              const height = msg.holdHeight ?? 5;
-              const x = p.x + -Math.sin(p.yaw) * dist;
-              const z = p.z + -Math.cos(p.yaw) * dist;
-              net.sendTo(msg.heldPlayerId, { type: "grabbedPosition", x, y: height, z });
-            }
-          }
-          return;
-        }
-        if (type === "grab") {
-          const obj = objects[msg.objectId];
-          if (!obj || !p || obj.heldBy !== null) return;
-          obj.heldBy = id;
-          p.heldId = msg.objectId;
-          net.broadcast(null, { type: "grab", playerId: id, objectId: msg.objectId });
-          net.emit("grab", { playerId: id, objectId: msg.objectId });
-          return;
-        }
-        if (type === "throw") {
-          const { objectId, vx, vy, vz } = msg;
-          const obj = objects[objectId];
-          if (!obj || !p || obj.heldBy !== id) return;
-          obj.heldBy = null;
-          p.heldId = null;
-          obj.vx = vx;
-          obj.vy = vy;
-          obj.vz = vz;
-          net.broadcast(null, { type: "throw", playerId: id, objectId, vx, vy, vz });
-          net.emit("throw", { playerId: id, objectId, vx, vy, vz });
-          return;
-        }
-        if (type === "drop") {
-          const obj = objects[msg.objectId];
-          if (!obj || !p || obj.heldBy !== id) return;
-          obj.heldBy = null;
-          p.heldId = null;
-          net.broadcast(null, { type: "drop", playerId: id, objectId: msg.objectId });
-          net.emit("drop", { playerId: id, objectId: msg.objectId });
-          return;
-        }
-        if (type === "grabPlayer") {
-          const grabbed = players.get(msg.grabbedId);
-          if (!p || !grabbed || grabbed.grabbedBy) return;
-          grabbed.grabbedBy = id;
-          net.broadcast(null, { type: "playerGrabbed", grabberId: id, grabbedId: msg.grabbedId });
-          net.emit("playerGrabbed", { grabberId: id, grabbedId: msg.grabbedId });
-          return;
-        }
-        if (type === "releasePlayer") {
-          const grabbedId = [...players.entries()].find(([_, pl]) => pl.grabbedBy === id)?.[0];
-          if (!grabbedId) return;
-          players.get(grabbedId).grabbedBy = null;
-          net.broadcast(null, { type: "playerReleased", grabberId: id, grabbedId });
-          net.emit("playerReleased", { grabberId: id, grabbedId });
-          return;
-        }
-        if (type === "throwPlayer") {
-          const { grabbedId, vx, vy, vz } = msg;
-          const grabbed = players.get(grabbedId);
-          if (!grabbed || grabbed.grabbedBy !== id) return;
-          grabbed.grabbedBy = null;
-          net.sendTo(grabbedId, { type: "playerThrown", vx, vy, vz });
-          net.broadcast(null, { type: "playerReleased", grabberId: id, grabbedId });
-          return;
-        }
-        if (type === "hitPlayer") {
-          if (players.has(msg.targetId)) net.sendTo(msg.targetId, { type: "hitBy", vx: msg.vx, vy: msg.vy, vz: msg.vz });
-          return;
-        }
-        if (type === "objectHitPlayer") {
-          const { objectIndex } = msg;
-          const m = typeof dynamic !== "undefined" && dynamic[objectIndex];
-          if (m && m.userData && m.userData.vel) {
-            m.userData.vel.multiplyScalar(0.25);
-          }
-          return;
-        }
-        if (type === "npcHitPlayer") {
-          const { npcIndex } = msg;
-          const npc = typeof npcDucks !== "undefined" && npcDucks[npcIndex];
-          if (npc && npc.vel) {
-            npc.vel.multiplyScalar(0.35);
-          }
-          return;
-        }
-        if (type === "myDucktag") {
-          if (p) p.ducktag = msg.ducktag || "Ducky1234";
-          net.broadcast(null, { type: "playerDucktag", id, ducktag: (p && p.ducktag) || "Ducky1234" });
-          net.emit("playerDucktag", { id, ducktag: (p && p.ducktag) || "Ducky1234" });
-          return;
-        }
-        if (type === "objectSync") {
-          const obj = objects[msg.id];
-          if (!obj || obj.heldBy !== null) return;
-          obj.x = msg.x;
-          obj.y = msg.y;
-          obj.z = msg.z;
-          obj.vx = msg.vx;
-          obj.vy = msg.vy;
-          obj.vz = msg.vz;
-          net.broadcast(id, { type: "objectSync", id: msg.id, x: msg.x, y: msg.y, z: msg.z, vx: msg.vx, vy: msg.vy, vz: msg.vz });
-          net.emit("objectSync", { id: msg.id, x: msg.x, y: msg.y, z: msg.z, vx: msg.vx, vy: msg.vy, vz: msg.vz });
-          return;
-        }
-        if (type === "resetWorld") {
-          if (simulatorId === net.myId) {
-            net.hostState.objects = generateObjectLayout();
-            const payload = { type: "worldReset", objects: net.hostState.objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, heldBy: o.heldBy })) };
-            net.broadcast(null, payload);
-            applyWorldReset(net.hostState.objects);
-          } else {
-            net.sendTo(simulatorId, { type: "resetWorld" });
-          }
-          return;
-        }
-      },
-    };
-
     // Duck model (loaded async)
     let duckModelTemplate = null;
     async function loadDuckModel() {
@@ -717,106 +474,30 @@
     const playBtn = document.getElementById("playBtn");
     const menuStatus = document.getElementById("menuStatus");
 
-    function startAsHost(roomId) {
-      net.isHost = true;
-      net.myId = roomId;
-      myId = roomId;
-      net.hostState = {
-        players: new Map([[roomId, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color: DUCK_COLORS[0], ducktag: myDucktag }]]),
-        objects: generateObjectLayout(),
-      };
-      net.peer = new Peer(roomId, { secure: true, host: "0.peerjs.com", port: 443, path: "/" });
-      net.peer.on("open", () => {
-        net.allPeerIds.clear();
-        net.allPeerIds.add(roomId);
-        menuStatus.textContent = "Room: " + roomId + " — Share this ID or link. Waiting for players...";
-        socket = {
-          emit(type, payload) {
-            const msg = typeof payload === "object" && payload !== null && !Array.isArray(payload) && !payload.type ? { type, ...payload } : { type, ...(payload !== undefined ? (type === "grab" || type === "drop" ? { objectId: payload } : payload) : {}) };
-            net.send(msg);
-          },
-        };
-        setupNetHandlers();
-        net.onConnect && net.onConnect();
-      });
-      net.peer.on("connection", (conn) => {
-        conn.on("open", () => {
-          const id = conn.peer;
-          net.connections.set(id, conn);
-          net.allPeerIds.add(id);
-          const color = getNextColor(net.hostState.players);
-          net.hostState.players.set(id, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color, ducktag: "Ducky1234" });
-          conn.send({
-            type: "init",
-            yourId: id,
-            players: Object.fromEntries([...net.hostState.players.entries()].map(([k, v]) => [k, { ...v, id: k }])),
-            objects: net.hostState.objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, mass: o.mass, size: o.size, heldBy: o.heldBy })),
-          });
-          net.broadcast(id, { type: "playerJoined", id, x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, color, ducktag: "Ducky1234" });
-          // Host view: show new player
-          otherPlayers.set(id, { x: 0, y: 2, z: 18, yaw: 0, pitch: 0, velY: 0, heldId: null, grabbedBy: null, color, ducktag: "Ducky1234" });
-          const mesh = createOtherPlayerDuck(id, color);
-          mesh.position.set(0, 2, 18);
-          otherPlayerMeshes.set(id, mesh);
-          addPlayerLabel(id, "Ducky1234");
-          conn.on("data", (msg) => net.handleMessage(id, msg));
-          conn.on("close", () => {
-            const p = net.hostState.players.get(id);
-            if (p?.heldId != null) {
-              net.hostState.objects[p.heldId].heldBy = null;
-              net.broadcast(null, { type: "drop", playerId: id, objectId: p.heldId });
-            }
-            const grabbedId = [...net.hostState.players.entries()].find(([_, pl]) => pl.grabbedBy === id)?.[0];
-            if (grabbedId) {
-              net.hostState.players.get(grabbedId).grabbedBy = null;
-              net.broadcast(null, { type: "playerReleased", grabberId: id, grabbedId });
-            }
-            net.hostState.players.delete(id);
-            net.connections.delete(id);
-            net.allPeerIds.delete(id);
-            net.broadcast(null, { type: "playerLeft", id });
-            net.emit("playerLeft", id); // host view: remove other player mesh
-          });
-        });
-      });
-      net.peer.on("error", (err) => {
-        menuStatus.textContent = "Error: " + (err.message || err.type || "Could not create room");
-      });
+    let socket = null;
+    let roomId = null;
+
+    function connectAndCreateRoom() {
+      if (typeof io === "undefined") {
+        menuStatus.textContent = "Socket.io failed to load. Check connection.";
+        return;
+      }
+      socket = io();
+      setupSocketHandlers();
+      socket.emit("createRoom", { ducktag: myDucktag });
     }
 
-    function startAsClient(hostId) {
-      net.isHost = false;
-      net.hostId = hostId;
-      net.messageHandlers.clear(); // fresh handlers so we don't double-register
-      setupNetHandlers();          // register before connecting so we don't miss init
-      net.peer = new Peer({ secure: true, host: "0.peerjs.com", port: 443, path: "/" });
-      net.peer.on("open", () => {
-        const conn = net.peer.connect(hostId);
-        net.connections.set(hostId, conn);
-        conn.on("data", (msg) => net.handleMessage(hostId, msg)); // receive immediately so init isn't lost
-        conn.on("open", () => {
-          net.myId = net.peer.id;
-          myId = net.peer.id;
-          const ducktagEl = document.getElementById("ducktagInput");
-          myDucktag = (ducktagEl && ducktagEl.value.trim()) || "Ducky1234";
-          socket = {
-            emit(type, payload) {
-              const msg = typeof payload === "object" && payload !== null && !Array.isArray(payload) && !payload.type ? { type, ...payload } : { type, ...(payload !== undefined ? (type === "grab" || type === "drop" ? { objectId: payload } : payload) : {}) };
-              net.send(msg);
-            },
-          };
-          socket.emit("myDucktag", { ducktag: myDucktag });
-          conn.on("close", () => {
-            menuStatus.textContent = "Host disconnected";
-            net.connections.delete(hostId);
-          });
-          net.onConnect && net.onConnect();
-        });
-        conn.on("error", () => { menuStatus.textContent = "Connection failed. Check Room ID."; });
-      });
-      net.peer.on("error", (err) => {
-        menuStatus.textContent = "Error: " + (err.message || err.type || "Could not connect");
-      });
+    function connectAndJoinRoom(roomIdToJoin) {
+      if (typeof io === "undefined") {
+        menuStatus.textContent = "Socket.io failed to load. Check connection.";
+        return;
+      }
+      roomId = roomIdToJoin;
+      if (!socket || !socket.connected) {
+        socket = io();
+      }
+      setupSocketHandlers();
+      socket.emit("joinRoom", { roomId: roomIdToJoin, ducktag: myDucktag });
     }
 
     function randomRoomId() {
@@ -873,16 +554,10 @@
         if (typeof reset === "function") reset(); // clear character position/state when leaving
         // Leave room entirely when coming from an online game
         if (socket && myId) {
-          if (net.peer) {
-            net.peer.destroy();
-            net.peer = null;
-          }
-          net.isHost = false;
-          net.connections.clear();
-          net.allPeerIds.clear();
-          net.hostState = null;
+          socket.emit("leaveRoom");
           socket = null;
           myId = null;
+          roomId = null;
           for (const [id, mesh] of otherPlayerMeshes) {
             if (mesh.userData?.grabBox) {
               const i = interactables.indexOf(mesh.userData.grabBox);
@@ -1012,7 +687,7 @@
     }
 
     function rand(min, max) { return min + Math.random() * (max - min); }
-    const worldRand = seededRandom(12345); // seededRandom defined earlier (PeerJS section)
+    const worldRand = seededRandom(12345); // seededRandom defined earlier
     function worldRandRange(min, max) { return min + worldRand() * (max - min); }
 
     function addBuilding(cx, cz, w, d, h) {
@@ -1098,7 +773,6 @@
     // ---------------------------
     // Multiplayer
     // ---------------------------
-    let socket = null; // compatibility adapter: set when Peer connected; socket.emit(type, data) -> net.send(...)
     let myId = null;
     let myDucktag = "Ducky1234";
     const otherPlayers = new Map(); // id -> { x, y, z, yaw, pitch, heldId, holdDistance, holdHeight, ducktag }
@@ -1111,8 +785,9 @@
 
     // Invisible box used for grab detection so it matches the collision hitbox (DUCK_SIZE)
     function makeGrabBox(userData) {
+      // Slightly larger than collision box to make grabbing easier
       const box = new THREE.Mesh(
-        new THREE.BoxGeometry(DUCK_SIZE.x, DUCK_SIZE.y, DUCK_SIZE.z),
+        new THREE.BoxGeometry(DUCK_SIZE.x * 1.2, DUCK_SIZE.y, DUCK_SIZE.z * 1.2),
         new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
       );
       box.userData = userData;
@@ -1158,24 +833,32 @@
       if (el) el.textContent = ducktag || "Ducky1234";
     }
 
-    net.onConnect = () => {
-      if (typeof reset === "function") reset(); // always start at spawn when entering a game
+    function onSocketConnect() {
+      if (typeof reset === "function") reset();
       const hud = document.getElementById("hud");
       const roomEl = document.getElementById("hudRoom");
-      const roomCode = net.isHost ? net.myId : net.hostId;
       if (hud) hud.classList.add("online");
-      if (roomEl && roomCode) roomEl.textContent = roomCode;
+      if (roomEl && roomId) roomEl.textContent = roomId;
       ensureSelfPlayerLabel();
       if (selfPlayerLabelEl) selfPlayerLabelEl.textContent = myDucktag;
       menuStatus.textContent = "Connected! Locking pointer...";
       renderer.domElement.requestPointerLock();
-    };
+    }
 
-    function setupNetHandlers() {
-      net.on("init", (data) => {
+    function setupSocketHandlers() {
+      if (!socket) return;
+      socket.off("roomCreated").on("roomCreated", (data) => {
+        roomId = data.roomId;
+        if (roomIdInput) roomIdInput.value = roomId;
+        const hudRoomEl = document.getElementById("hudRoom");
+        if (hudRoomEl) hudRoomEl.textContent = roomId;
+        menuStatus.textContent = "Room: " + roomId + " — Share this ID. Waiting for players...";
+      });
+      socket.off("roomNotFound").on("roomNotFound", () => {
+        menuStatus.textContent = "Room not found. Check the ID.";
+      });
+      socket.off("init").on("init", (data) => {
         myId = data.yourId;
-        net.allPeerIds.clear();
-        for (const id of Object.keys(data.players || {})) net.allPeerIds.add(id);
         objectHeldBy.clear();
         for (const [id, p] of Object.entries(data.players)) {
           if (id === myId) continue;
@@ -1194,9 +877,10 @@
             m.userData.vel.set(o.vx, o.vy, o.vz);
           }
         }
+        if (data.players && data.players[myId]) socket.emit("myDucktag", { ducktag: myDucktag });
+        onSocketConnect();
       });
-      net.on("playerJoined", (p) => {
-        net.allPeerIds.add(p.id);
+      socket.off("playerJoined").on("playerJoined", (p) => {
         otherPlayers.set(p.id, p);
         const mesh = createOtherPlayerDuck(p.id, p.color);
         mesh.position.set(p.x, p.y, p.z);
@@ -1204,8 +888,7 @@
         otherPlayerMeshes.set(p.id, mesh);
         addPlayerLabel(p.id, p.ducktag);
       });
-      net.on("playerLeft", (id) => {
-        net.allPeerIds.delete(id);
+      socket.off("playerLeft").on("playerLeft", (id) => {
         if (heldPlayerId === id) heldPlayerId = null;
         otherPlayers.delete(id);
         removePlayerLabel(id);
@@ -1223,12 +906,12 @@
           if (pid === id) objectHeldBy.delete(objId);
         }
       });
-      net.on("playerDucktag", (data) => {
+      socket.off("playerDucktag").on("playerDucktag", (data) => {
         const p = otherPlayers.get(data.id);
         if (p) p.ducktag = data.ducktag;
         setPlayerLabelDucktag(data.id, data.ducktag);
       });
-      net.on("playerUpdate", (data) => {
+      socket.off("playerUpdate").on("playerUpdate", (data) => {
         const { id, x, y, z, yaw, pitch, heldId, holdDistance, holdHeight } = data;
         if (id === myId) return;
         const p = otherPlayers.get(id) || {};
@@ -1240,38 +923,35 @@
           mesh.rotation.y = yaw;
         }
       });
-      net.on("grab", (data) => {
+      socket.off("grab").on("grab", (data) => {
         const { playerId, objectId } = data;
         if (playerId !== myId) objectHeldBy.set(objectId, playerId);
       });
-      net.on("throw", (data) => {
+      socket.off("throw").on("throw", (data) => {
         const { playerId, objectId, vx, vy, vz } = data;
         objectHeldBy.delete(objectId);
         const m = dynamic[objectId];
         if (m && playerId !== myId) m.userData.vel.add(new THREE.Vector3(vx, vy, vz));
       });
-      net.on("drop", (data) => {
+      socket.off("drop").on("drop", (data) => {
         objectHeldBy.delete(data.objectId);
       });
-      net.on("objectSync", (data) => {
-        const m = dynamic[data.id];
-        if (m && !objectHeldBy.has(data.id)) {
-          m.position.set(data.x, data.y, data.z);
-          m.userData.vel.set(data.vx || 0, data.vy || 0, data.vz || 0);
-        }
-      });
-      net.on("playerGrabbed", (data) => {
+      socket.off("playerGrabbed").on("playerGrabbed", (data) => {
         if (data.grabbedId === myId) grabbedBy = data.grabberId;
       });
-      net.on("playerReleased", (data) => {
-        if (data.grabbedId === myId) grabbedBy = null;
+      socket.off("playerReleased").on("playerReleased", (data) => {
+        if (data.grabbedId === myId) {
+          grabbedBy = null;
+          lastGrabbedPosition = null;
+        }
         if (data.grabberId === myId && data.grabbedId === heldPlayerId) heldPlayerId = null;
       });
-      net.on("grabbedPosition", (data) => {
+      socket.off("grabbedPosition").on("grabbedPosition", (data) => {
         lastGrabbedPosition = data;
       });
-      net.on("playerThrown", (data) => {
+      socket.off("playerThrown").on("playerThrown", (data) => {
         grabbedBy = null;
+        lastGrabbedPosition = null;
         const { vx, vy, vz } = data;
         launchVel.set(vx, 0, vz);
         velY = vy;
@@ -1280,19 +960,7 @@
         tumblePitch += vy * 0.04;
         tumbleRoll += (vx + vz) * 0.03;
       });
-      net.on("objectHitPlayer", (data) => {
-        const simId = net.allPeerIds.size ? [...net.allPeerIds].sort()[0] : net.myId;
-        if (myId !== simId) return;
-        const m = dynamic[data.objectIndex];
-        if (m && m.userData && m.userData.vel) m.userData.vel.multiplyScalar(0.25);
-      });
-      net.on("npcHitPlayer", (data) => {
-        const simId = net.allPeerIds.size ? [...net.allPeerIds].sort()[0] : net.myId;
-        if (myId !== simId) return;
-        const npc = npcDucks[data.npcIndex];
-        if (npc && npc.vel) npc.vel.multiplyScalar(0.35);
-      });
-      net.on("hitBy", (data) => {
+      socket.off("hitBy").on("hitBy", (data) => {
         const { vx, vy, vz } = data;
         launchVel.addScaledVector(new THREE.Vector3(vx, 0, vz), 1);
         velY += vy;
@@ -1301,26 +969,26 @@
         tumblePitch += vy * 0.035;
         tumbleRoll += (vx + vz) * 0.025;
       });
-      net.on("resetWorld", () => {
-        const simId = net.allPeerIds.size ? [...net.allPeerIds].sort()[0] : net.myId;
-        if (myId !== simId) return;
-        const objects = generateObjectLayout();
-        socket.emit("worldReset", { objects: objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, heldBy: o.heldBy })) });
-      });
-      net.on("worldReset", (data) => {
+      socket.off("worldReset").on("worldReset", (data) => {
         if (data.objects) applyWorldReset(data.objects);
       });
-      net.on("buildingDestroyed", (data) => {
+      socket.off("buildingDestroyed").on("buildingDestroyed", (data) => {
         const idx = buildings.findIndex((b) => b.id === data.buildingId);
         if (idx < 0) return;
         const bldg = buildings[idx];
-        scene.remove(bldg.mesh);
-        if (bldg.mesh.geometry) bldg.mesh.geometry.dispose();
-        const ci = colliders.indexOf(bldg.box);
-        if (ci >= 0) colliders.splice(ci, 1);
+        if (bldg.destroyed) {
+          buildings.splice(idx, 1);
+          return;
+        }
+        const center = new THREE.Vector3(
+          (bldg.box.min.x + bldg.box.max.x) * 0.5,
+          (bldg.box.min.y + bldg.box.max.y) * 0.5,
+          (bldg.box.min.z + bldg.box.max.z) * 0.5
+        );
+        shatterBuilding(bldg, center, new THREE.Vector3(0, 0, 0));
         buildings.splice(idx, 1);
       });
-      net.on("envUpdate", (data) => {
+      socket.off("envUpdate").on("envUpdate", (data) => {
         if (data.objects) {
           for (const o of data.objects) {
             if (objectHeldBy.has(o.id)) continue; // keep client interpolation for held objects
@@ -1340,28 +1008,20 @@
       });
     }
 
-    // Menu buttons (attached after load so setupNetHandlers, otherPlayers, etc. exist)
+    // Menu buttons
     document.getElementById("createGameBtn").addEventListener("click", () => {
       const ducktagEl = document.getElementById("ducktagInput");
       myDucktag = (ducktagEl && ducktagEl.value.trim()) || "Ducky1234";
       menuStatus.textContent = "Creating room...";
-      if (typeof Peer === "undefined") {
-        menuStatus.textContent = "PeerJS failed to load. Check connection.";
-        return;
-      }
-      const roomId = randomRoomId();
-      startAsHost(roomId);
-      if (roomIdInput) roomIdInput.value = roomId;
+      connectAndCreateRoom();
     });
     document.getElementById("joinGameBtn").addEventListener("click", () => {
-      const hostId = (roomIdInput && roomIdInput.value.trim()) || prompt("Enter Room ID:");
-      if (!hostId || !hostId.trim()) return;
+      const roomIdToJoin = (roomIdInput && roomIdInput.value.trim()) || prompt("Enter Room ID:");
+      if (!roomIdToJoin || !roomIdToJoin.trim()) return;
+      const ducktagEl = document.getElementById("ducktagInput");
+      myDucktag = (ducktagEl && ducktagEl.value.trim()) || "Ducky1234";
       menuStatus.textContent = "Joining...";
-      if (typeof Peer === "undefined") {
-        menuStatus.textContent = "PeerJS failed to load.";
-        return;
-      }
-      startAsClient(hostId.trim());
+      connectAndJoinRoom(roomIdToJoin.trim());
     });
     document.getElementById("playOfflineBtn").addEventListener("click", () => {
       menuStatus.textContent = "Playing offline...";
@@ -1372,7 +1032,7 @@
     if (copyRoomBtn) {
       copyRoomBtn.addEventListener("click", () => {
         const roomEl = document.getElementById("hudRoom");
-        const code = roomEl ? roomEl.textContent.trim() : (net.isHost ? net.myId : net.hostId) || "";
+        const code = roomEl ? roomEl.textContent.trim() : roomId || "";
         if (!code || code === "—") return;
         navigator.clipboard.writeText(code).then(() => {
           const label = copyRoomBtn.textContent;
@@ -1710,7 +1370,6 @@
         const impulse = dir.multiplyScalar(strength);
         const throwMsg = { grabbedId: heldPlayerId, vx: impulse.x, vy: impulse.y, vz: impulse.z };
         if (socket) socket.emit("throwPlayer", throwMsg);
-        if (net.isHost) net.handleHostMessage(net.myId, { type: "throwPlayer", ...throwMsg });
         heldPlayerId = null;
         focus.visible = false;
         sparkleGroup.visible = false;
@@ -1733,7 +1392,10 @@
       const impulse = dir.multiplyScalar(strength);
       held.userData.vel.add(impulse);
       const objectId = dynamic.indexOf(held);
-      if (objectId >= 0 && socket) socket.emit("throw", { objectId, vx: impulse.x, vy: impulse.y, vz: impulse.z });
+      if (objectId >= 0 && socket) {
+        const pos = held.position;
+        socket.emit("throw", { objectId, x: pos.x, y: pos.y, z: pos.z, vx: impulse.x, vy: impulse.y, vz: impulse.z });
+      }
       releaseHeldNPC();
       held = null;
       focus.visible = false;
@@ -1770,7 +1432,6 @@
       if (e.button === 2) { // right click drop
         if (heldPlayerId) {
           if (socket) socket.emit("releasePlayer");
-          if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
           heldPlayerId = null;
           focus.visible = false;
           sparkleGroup.visible = false;
@@ -1819,7 +1480,6 @@
       if (!holding) {
         if (heldPlayerId && socket) {
           socket.emit("releasePlayer");
-          if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
         }
         heldPlayerId = null;
         return;
@@ -1832,9 +1492,7 @@
           const otherId = obj.userData.otherPlayerId;
           if (otherId && socket) {
             heldPlayerId = otherId;
-            const grabMsg = { grabbedId: otherId };
-            socket.emit("grabPlayer", grabMsg);
-            if (net.isHost) net.handleHostMessage(net.myId, { type: "grabPlayer", ...grabMsg });
+            socket.emit("grabPlayer", otherId);
             const p = otherPlayers.get(otherId);
             if (p) {
               holdDistance = Math.max(2, Math.min(40, new THREE.Vector3(p.x - duck.position.x, 0, p.z - duck.position.z).length()));
@@ -1976,11 +1634,6 @@
     }
 
     function shatterBuilding(bldg, impactPos, impactVel) {
-      const simId = net.allPeerIds.size ? [...net.allPeerIds].sort()[0] : net.myId;
-      if (myId === simId && bldg.id != null) {
-        if (net.isHost) net.broadcast(null, { type: "buildingDestroyed", buildingId: bldg.id });
-        else if (socket && myId) socket.emit("buildingDestroyed", { buildingId: bldg.id });
-      }
       playSfx("shatter");
       const mesh = bldg.mesh;
       const box = bldg.box;
@@ -2295,7 +1948,6 @@
       held = null;
       if (heldPlayerId && socket) {
         socket.emit("releasePlayer");
-        if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
       }
       heldPlayerId = null;
       focus.visible = false;
@@ -2314,7 +1966,6 @@
       held = null;
       if (heldPlayerId && socket) {
         socket.emit("releasePlayer");
-        if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
       }
       heldPlayerId = null;
       grabbedBy = null;
@@ -2337,6 +1988,9 @@
 
       if (grabbedBy && lastGrabbedPosition && typeof lastGrabbedPosition.x === "number") {
         duck.position.set(lastGrabbedPosition.x, lastGrabbedPosition.y, lastGrabbedPosition.z);
+        velY = 0;
+        launchVel.set(0, 0, 0);
+        grounded = false;
       } else {
         // Input -> movement (relative to yaw)
         const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
@@ -2402,7 +2056,6 @@
           held = null;
           if (heldPlayerId && socket) {
             socket.emit("releasePlayer");
-            if (net.isHost) net.handleHostMessage(net.myId, { type: "releasePlayer" });
           }
           heldPlayerId = null;
           focus.visible = false;
@@ -2473,14 +2126,10 @@
       // Cleanup settled debris when over limit
       removeSettledDebris();
 
-      // World sim: elected by lowest peer ID (same experience for all — no host privilege)
-      function getSimulatorId() {
-        const ids = Array.from(net.allPeerIds || []);
-        return ids.length ? ids.sort()[0] : net.myId;
-      }
-      const runEnvSim = !(socket && myId) || (myId === getSimulatorId());
+      // World sim: offline runs full physics; online interpolates from envUpdate
+      const runEnvSim = !(socket && myId);
       if (runEnvSim) {
-        // Update dynamic props
+        // Update dynamic props (offline mode only)
         for (let i = 0; i < dynamic.length; i++) {
           const m = dynamic[i];
           if (objectHeldBy.has(i)) continue; // held by another player
@@ -2530,6 +2179,89 @@
 
         // NPC ducks (host-only in multiplayer)
         updateNPCs(dt);
+      } else if (socket && myId) {
+        // Online: run physics locally for immediate feedback (prediction)
+        // Server envUpdate will correct any desync
+        for (let i = 0; i < dynamic.length; i++) {
+          const m = dynamic[i];
+          if (objectHeldBy.has(i)) continue;
+          if (m === held) continue;
+          const v = m.userData?.vel;
+          if (!v) continue;
+          v.y -= GRAVITY * dt;
+          v.x *= DAMPING;
+          v.y *= DAMPING;
+          v.z *= DAMPING;
+          m.position.x += v.x * dt;
+          m.position.y += v.y * dt;
+          m.position.z += v.z * dt;
+          checkBuildingDestruction(m);
+          resolveDynamicCollisions(m);
+        }
+
+        // Dynamic-to-NPC collisions
+        for (const m of dynamic) {
+          const mSpeed = m.userData.vel?.length() || 0;
+          if (mSpeed < 2) continue;
+          const mBox = meshAABB(m);
+          for (const npc of npcDucks) {
+            if (npc.grabbed) continue;
+            if (held === npc.mesh) continue;
+            const nBox = npcAABB(npc);
+            if (!aabbIntersects(mBox, nBox)) continue;
+            const knockback = m.userData.vel.clone().multiplyScalar(0.8 / Math.max(0.5, npc.mesh.userData?.mass || 1.5));
+            knockback.y = Math.max(knockback.y, 4 + mSpeed * 0.2);
+            npc.vel.add(knockback);
+            m.userData.vel.multiplyScalar(0.3);
+            break;
+          }
+        }
+
+        // NPC Physics & Building Destruction
+        for (const npc of npcDucks) {
+          if (npc.grabbed) continue;
+          npc.vel.y -= GRAVITY * dt;
+          npc.vel.x *= 0.995;
+          npc.vel.y *= 0.995;
+          npc.vel.z *= 0.995;
+          npc.mesh.position.x += npc.vel.x * dt;
+          npc.mesh.position.y += npc.vel.y * dt;
+          npc.mesh.position.z += npc.vel.z * dt;
+
+          const npcSpeed = npc.vel.length();
+          if (npcSpeed >= BREAK_SPEED) {
+            const npcBox = npcAABB(npc);
+            for (const bldg of buildings) {
+              if (bldg.destroyed) continue;
+              if (!aabbIntersects(npcBox, bldg.box)) continue;
+              shatterBuilding(bldg, npc.mesh.position.clone(), npc.vel.clone());
+              npc.vel.multiplyScalar(0.4);
+              break;
+            }
+          }
+
+          const nBox = npcAABB(npc);
+          for (const c of colliders) {
+            if (!aabbIntersects(nBox, c)) continue;
+            const overlapX = Math.min(nBox.max.x - c.min.x, c.max.x - nBox.min.x);
+            const overlapZ = Math.min(nBox.max.z - c.min.z, c.max.z - nBox.min.z);
+            if (overlapX < overlapZ) {
+              npc.mesh.position.x += (npc.mesh.position.x > (c.min.x + c.max.x) * 0.5) ? overlapX + 0.01 : -(overlapX + 0.01);
+              npc.vel.x *= -0.4;
+            } else {
+              npc.mesh.position.z += (npc.mesh.position.z > (c.min.z + c.max.z) * 0.5) ? overlapZ + 0.01 : -(overlapZ + 0.01);
+              npc.vel.z *= -0.4;
+            }
+            break;
+          }
+          const halfY = npc.hitboxSize.y * 0.5;
+          if (npc.mesh.position.y < halfY) {
+            npc.mesh.position.y = halfY;
+            if (npc.vel.y < 0) npc.vel.y *= -0.3;
+            npc.vel.x *= 0.7;
+            npc.vel.z *= 0.7;
+          }
+        }
       }
 
       // Objects hit local player (blocks actually hit you!)
@@ -2552,7 +2284,7 @@
         tumblePitch += knock.y * 0.035;
         tumbleRoll += (knock.x + knock.z) * 0.025;
         m.userData.vel.multiplyScalar(0.25);
-        if (socket && myId && !net.isHost) socket.emit("objectHitPlayer", { objectIndex: i });
+        if (socket && myId) socket.emit("objectHitPlayer", { objectIndex: i });
         break;
       }
 
@@ -2574,7 +2306,7 @@
         tumblePitch += knock.y * 0.035;
         tumbleRoll += (knock.x + knock.z) * 0.025;
         npc.vel.multiplyScalar(0.35);
-        if (socket && myId && !net.isHost) socket.emit("npcHitPlayer", { npcIndex: ni });
+        if (socket && myId) socket.emit("npcHitPlayer", { npcIndex: ni });
         break;
       }
 
@@ -2608,35 +2340,6 @@
           if (socket) socket.emit("hitPlayer", { targetId: pid, vx: knock.x, vy: knock.y, vz: knock.z });
           npc.vel.multiplyScalar(0.35);
           break;
-        }
-      }
-
-      // Simulator: sync world state and broadcast envUpdate (host relays if simulator is client)
-      if (runEnvSim && (socket && myId)) {
-        if (net.isHost && net.hostState) {
-          const objects = net.hostState.objects;
-          for (let i = 0; i < objects.length && i < dynamic.length; i++) {
-            const m = dynamic[i];
-            objects[i].x = m.position.x;
-            objects[i].y = m.position.y;
-            objects[i].z = m.position.z;
-            objects[i].vx = m.userData.vel.x;
-            objects[i].vy = m.userData.vel.y;
-            objects[i].vz = m.userData.vel.z;
-          }
-        }
-        envUpdateTick++;
-        if (envUpdateTick % 2 === 0) {
-          const objects = net.hostState
-            ? net.hostState.objects.map((o) => ({ id: o.id, x: o.x, y: o.y, z: o.z, vx: o.vx, vy: o.vy, vz: o.vz, heldBy: o.heldBy }))
-            : dynamic.map((m, i) => ({ id: i, x: m.position.x, y: m.position.y, z: m.position.z, vx: m.userData.vel.x, vy: m.userData.vel.y, vz: m.userData.vel.z, heldBy: objectHeldBy.get(i) || null }));
-          const payload = { type: "envUpdate", objects, npcs: npcDucks.map((n) => ({ x: n.mesh.position.x, y: n.mesh.position.y, z: n.mesh.position.z, vx: n.vel.x, vy: n.vel.y, vz: n.vel.z })) };
-          if (net.isHost) {
-            net.broadcast(null, payload);
-            net.emit("envUpdate", payload);
-          } else {
-            socket.emit("envUpdate", payload);
-          }
         }
       }
 
