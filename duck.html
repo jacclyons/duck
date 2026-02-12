@@ -570,7 +570,7 @@
     async function loadDuckModel() {
       try {
         const gltf = await new Promise((resolve, reject) => {
-          new GLTFLoader().load("duck_.glb", resolve, undefined, reject);
+          new GLTFLoader().load("duck.glb", resolve, undefined, reject);
         });
         const model = gltf.scene;
         model.traverse((o) => {
@@ -583,7 +583,7 @@
         const size = box.getSize(new THREE.Vector3());
         const scale = 1.2 / Math.max(size.x, size.y, size.z);
         model.scale.setScalar(scale);
-        model.rotation.y = 0;  // GLB faces -Z by default; no flip needed
+        model.rotation.y = 0;
         // Center model so pivot aligns with collision/grabbable bounds
         const box2 = new THREE.Box3().setFromObject(model);
         const center = box2.getCenter(new THREE.Vector3());
@@ -593,10 +593,10 @@
         // Align model feet with ground (collision uses center at 1.1, feet at 0)
         const modelHalfHeight = (box2.max.y - box2.min.y) * 0.5;
         model.position.y -= (1.1 - modelHalfHeight);
-        model.rotation.y = Math.PI;  // Face -Z (forward) to match movement
+        model.rotation.y = 0;
         duckModelTemplate = model;
       } catch (err) {
-        console.warn("Could not load duck_.glb (run via server: npm start). Using fallback.", err);
+        console.warn("Could not load duck.glb (run via server: npm start). Using fallback.", err);
         duckModelTemplate = makeFallbackDuckModel();
       }
     }
@@ -608,21 +608,21 @@
         new THREE.MeshStandardMaterial({ color: 0xf5d547, roughness: 0.65 })
       );
       body.position.set(0, 0.55, 0);
-      body.rotation.y = Math.PI;
+      body.rotation.y = 0;
       g.add(body);
       const head = new THREE.Mesh(
         new THREE.SphereGeometry(0.35, 12, 10),
         new THREE.MeshStandardMaterial({ color: 0xf7dd61, roughness: 0.65 })
       );
       head.position.set(0, 1.1, 0.35);
-      head.rotation.y = Math.PI;
+      head.rotation.y = 0;
       g.add(head);
       const beak = new THREE.Mesh(
         new THREE.BoxGeometry(0.28, 0.14, 0.28),
         new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.7 })
       );
       beak.position.set(0, 1.02, 0.72);
-      beak.rotation.y = Math.PI;
+      beak.rotation.y = 0;
       g.add(beak);
       g.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
       return g;
@@ -1200,6 +1200,7 @@
         otherPlayers.set(p.id, p);
         const mesh = createOtherPlayerDuck(p.id, p.color);
         mesh.position.set(p.x, p.y, p.z);
+        mesh.rotation.y = p.yaw ?? 0;
         otherPlayerMeshes.set(p.id, mesh);
         addPlayerLabel(p.id, p.ducktag);
       });
@@ -2265,7 +2266,7 @@
           npc.targetDir.set(-npc.mesh.position.x, 0, -npc.mesh.position.z).normalize();
         }
 
-        // Face movement direction (add Math.PI to match duck model orientation)
+        // Face movement direction (+ Math.PI flips NPC model to match)
         npc.mesh.rotation.y = Math.atan2(npc.targetDir.x, npc.targetDir.z) + Math.PI;
 
         // Waddle animation
