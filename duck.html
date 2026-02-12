@@ -1648,6 +1648,14 @@
       target.y = holdHeight;
 
       if (heldPlayerId) {
+        // Move the held player's mesh to the telekinesis target so the grabber sees them in front
+        const heldMesh = otherPlayerMeshes.get(heldPlayerId);
+        if (heldMesh) {
+          const lerp = 1 - Math.pow(0.001, dt);
+          heldMesh.position.lerp(target, lerp);
+          const p = otherPlayers.get(heldPlayerId);
+          if (p) { p.x = heldMesh.position.x; p.y = heldMesh.position.y; p.z = heldMesh.position.z; }
+        }
         focus.position.copy(target).add(new THREE.Vector3(0, 0.6, 0));
         return;
       }
