@@ -294,7 +294,7 @@ function joinRoom(roomId, socketId, ducktag) {
 function tickRoom(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
-  const dt = 0.033;
+  const dt = 1 / 60; // 60Hz server tick
   const { objects, players, colliders, npcs } = room;
 
   // Object physics
@@ -463,13 +463,15 @@ function tickRoom(roomId) {
   }
 }
 
-let envUpdateTick = 0;
+// 60Hz server physics tick
 setInterval(() => {
   for (const [roomId] of rooms) {
     tickRoom(roomId);
   }
-  envUpdateTick++;
-  if (envUpdateTick % 2 !== 0) return;
+}, 1000 / 60);
+
+// 20Hz authoritative state broadcast (position + velocity for client-side prediction)
+setInterval(() => {
   for (const [roomId, room] of rooms) {
     if (room.players.size === 0) continue;
     const payload = {
@@ -485,7 +487,7 @@ setInterval(() => {
     };
     io.to(roomId).emit("envUpdate", payload);
   }
-}, 33);
+}, 50); // 50ms = 20Hz
 
 io.on("connection", (socket) => {
   socket.on("createRoom", (data) => {
@@ -613,6 +615,27 @@ io.on("connection", (socket) => {
     obj.heldBy = socket.id;
     p.heldId = objectId;
     io.to(roomId).emit("grab", { playerId: socket.id, objectId });
+  });
+
+  // Held-object position: holder sends their telekinesis position so others see smooth movement
+  socket.on("heldObjectPos", (data) => {
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    const obj = room?.objects[data.objectId];
+    if (!obj || obj.heldBy !== socket.id) return;
+    // Update server state so envUpdate doesn't fight the holder's position
+    obj.x = data.x;
+    obj.y = data.y;
+    obj.z = data.z;
+    obj.vx = 0;
+    obj.vy = 0;
+    obj.vz = 0;
+    // Broadcast to other clients
+    socket.to(roomId).emit("heldObjectPos", {
+      objectId: data.objectId,
+      x: data.x, y: data.y, z: data.z,
+    });
   });
 
   socket.on("throw", (data) => {
