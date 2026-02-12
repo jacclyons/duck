@@ -788,9 +788,11 @@
 
     // Invisible box used for grab detection so it matches the collision hitbox (DUCK_SIZE)
     function makeGrabBox(userData) {
-      // Slightly larger than collision box to make grabbing easier
+      // Online players get a larger grab box to compensate for network jitter
+      const isPlayer = !!userData.otherPlayerId;
+      const scale = isPlayer ? 2.0 : 1.2;
       const box = new THREE.Mesh(
-        new THREE.BoxGeometry(DUCK_SIZE.x * 1.2, DUCK_SIZE.y, DUCK_SIZE.z * 1.2),
+        new THREE.BoxGeometry(DUCK_SIZE.x * scale, DUCK_SIZE.y * (isPlayer ? 1.5 : 1), DUCK_SIZE.z * scale),
         new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
       );
       box.userData = userData;
@@ -918,13 +920,10 @@
         const { id, x, y, z, yaw, pitch, heldId, holdDistance, holdHeight } = data;
         if (id === myId) return;
         const p = otherPlayers.get(id) || {};
+        // Store target for interpolation instead of snapping
         Object.assign(p, { x, y, z, yaw, pitch, heldId, holdDistance, holdHeight });
+        p.targetX = x; p.targetY = y; p.targetZ = z; p.targetYaw = yaw;
         otherPlayers.set(id, p);
-        const mesh = otherPlayerMeshes.get(id);
-        if (mesh) {
-          mesh.position.set(x, y, z);
-          mesh.rotation.y = yaw;
-        }
       });
       socket.off("grab").on("grab", (data) => {
         const { playerId, objectId } = data;
@@ -997,14 +996,15 @@
             if (objectHeldBy.has(o.id)) continue; // keep client interpolation for held objects
             const m = dynamic[o.id];
             if (!m) continue;
-            m.position.set(o.x, o.y, o.z);
+            // Store server target; the game loop will lerp toward it
+            m.userData.serverTarget = { x: o.x, y: o.y, z: o.z };
             m.userData.vel.set(o.vx || 0, o.vy || 0, o.vz || 0);
           }
         }
         if (data.npcs && data.npcs.length === npcDucks.length) {
           for (let i = 0; i < npcDucks.length; i++) {
             const n = data.npcs[i];
-            npcDucks[i].mesh.position.set(n.x, n.y, n.z);
+            npcDucks[i].serverTarget = { x: n.x, y: n.y, z: n.z };
             npcDucks[i].vel.set(n.vx || 0, n.vy || 0, n.vz || 0);
           }
         }
@@ -2090,16 +2090,46 @@
       duck.rotation.x = tumblePitch;
       duck.rotation.z = tumbleRoll;
 
-      // Send position to server (include id so receivers know whose position this is)
+      // Send position to server throttled (~20Hz to reduce bandwidth, smooth on receivers via lerp)
       if (socket && myId) {
-        socket.emit("playerUpdate", {
-          id: myId,
-          x: duck.position.x, y: duck.position.y, z: duck.position.z,
-          yaw, pitch, velY,
-          heldId: held ? dynamic.indexOf(held) : null,
-          heldPlayerId: heldPlayerId || undefined,
-          holdDistance, holdHeight,
-        });
+        if (!step._lastSendTime) step._lastSendTime = 0;
+        const now = performance.now();
+        if (now - step._lastSendTime > 50) { // 50ms = 20Hz
+          step._lastSendTime = now;
+          socket.emit("playerUpdate", {
+            id: myId,
+            x: duck.position.x, y: duck.position.y, z: duck.position.z,
+            yaw, pitch, velY,
+            heldId: held ? dynamic.indexOf(held) : null,
+            heldPlayerId: heldPlayerId || undefined,
+            holdDistance, holdHeight,
+          });
+        }
+      }
+
+      // Smoothly interpolate other player positions (reduces jitter from network updates)
+      if (socket && myId) {
+        const lerpFactor = 1 - Math.pow(0.0001, dt); // ~0.85 at 60fps — smooth but responsive
+        for (const [pid, p] of otherPlayers) {
+          const mesh = otherPlayerMeshes.get(pid);
+          if (!mesh) continue;
+          if (p.targetX != null) {
+            mesh.position.x += (p.targetX - mesh.position.x) * lerpFactor;
+            mesh.position.y += (p.targetY - mesh.position.y) * lerpFactor;
+            mesh.position.z += (p.targetZ - mesh.position.z) * lerpFactor;
+            // Also update p.x/y/z so collision checks use the interpolated position
+            p.x = mesh.position.x;
+            p.y = mesh.position.y;
+            p.z = mesh.position.z;
+          }
+          if (p.targetYaw != null) {
+            // Lerp yaw (handling wrap-around)
+            let diff = p.targetYaw - mesh.rotation.y;
+            if (diff > Math.PI) diff -= Math.PI * 2;
+            if (diff < -Math.PI) diff += Math.PI * 2;
+            mesh.rotation.y += diff * lerpFactor;
+          }
+        }
       }
 
       // Update objects held by other players
@@ -2184,7 +2214,8 @@
         updateNPCs(dt);
       } else if (socket && myId) {
         // Online: run physics locally for immediate feedback (prediction)
-        // Server envUpdate will correct any desync
+        // Server envUpdate will correct any desync via smooth lerp toward server position
+        const serverLerp = 1 - Math.pow(0.01, dt); // ~0.25 per frame — blend gently toward server
         for (let i = 0; i < dynamic.length; i++) {
           const m = dynamic[i];
           if (objectHeldBy.has(i)) continue;
@@ -2198,8 +2229,24 @@
           m.position.x += v.x * dt;
           m.position.y += v.y * dt;
           m.position.z += v.z * dt;
+          // Blend toward server-authoritative position when available
+          const st = m.userData.serverTarget;
+          if (st) {
+            m.position.x += (st.x - m.position.x) * serverLerp;
+            m.position.y += (st.y - m.position.y) * serverLerp;
+            m.position.z += (st.z - m.position.z) * serverLerp;
+          }
           checkBuildingDestruction(m);
           resolveDynamicCollisions(m);
+        }
+        // Lerp NPC positions toward server target
+        for (const npc of npcDucks) {
+          const st = npc.serverTarget;
+          if (st) {
+            npc.mesh.position.x += (st.x - npc.mesh.position.x) * serverLerp;
+            npc.mesh.position.y += (st.y - npc.mesh.position.y) * serverLerp;
+            npc.mesh.position.z += (st.z - npc.mesh.position.z) * serverLerp;
+          }
         }
 
         // Dynamic-to-NPC collisions
