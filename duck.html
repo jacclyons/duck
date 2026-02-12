@@ -967,21 +967,34 @@
         grabbedBy = null;
         lastGrabbedPosition = null;
         const { vx, vy, vz } = data;
-        launchVel.set(vx, 0, vz);
-        velY = vy;
+        // Enter ragdoll mode — player becomes a physics object until they land
+        ragdollVel = new THREE.Vector3(vx, vy, vz);
+        ragdollMode = true;
         grounded = false;
         wasHitOrThrown = true;
-        tumblePitch += vy * 0.04;
-        tumbleRoll += (vx + vz) * 0.03;
+        tumblePitch += vy * 0.06;
+        tumbleRoll += (vx + vz) * 0.05;
       });
       socket.off("hitBy").on("hitBy", (data) => {
         const { vx, vy, vz } = data;
-        launchVel.addScaledVector(new THREE.Vector3(vx, 0, vz), 1);
-        velY += vy;
-        grounded = false;
-        wasHitOrThrown = true;
-        tumblePitch += vy * 0.035;
-        tumbleRoll += (vx + vz) * 0.025;
+        const hitSpeed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+        if (hitSpeed > 15) {
+          // Big hit — go full ragdoll
+          ragdollVel.set(vx, vy, vz);
+          ragdollMode = true;
+          grounded = false;
+          wasHitOrThrown = true;
+          tumblePitch += vy * 0.06;
+          tumbleRoll += (vx + vz) * 0.05;
+        } else {
+          // Small nudge — just push
+          launchVel.addScaledVector(new THREE.Vector3(vx, 0, vz), 1);
+          velY += vy;
+          grounded = false;
+          wasHitOrThrown = true;
+          tumblePitch += vy * 0.035;
+          tumbleRoll += (vx + vz) * 0.025;
+        }
       });
       socket.off("worldReset").on("worldReset", (data) => {
         if (data.objects) applyWorldReset(data.objects);
@@ -1088,6 +1101,10 @@
     const TUMBLE_MAX = 1.25;
     let envUpdateTick = 0; // host: broadcast env every N frames
     const launchVel = new THREE.Vector3(); // telekinetic jump horizontal boost
+
+    // Ragdoll mode: when grabbed & thrown, player becomes a physics object
+    let ragdollMode = false;
+    let ragdollVel = new THREE.Vector3();
 
     // Shared duck hitbox: same for player, other players, and NPCs (model and collision match)
     const DUCK_HALF = new THREE.Vector3(0.6, 1.2, 0.6);
@@ -2007,6 +2024,8 @@
       duck.position.copy(startPos);
       velY = 0;
       launchVel.set(0, 0, 0);
+      ragdollMode = false;
+      ragdollVel.set(0, 0, 0);
       tumblePitch = 0;
       tumbleRoll = 0;
       wasHitOrThrown = false;
@@ -2035,11 +2054,100 @@
       duck.rotation.y = yaw;
       camPivot.rotation.x = pitch;
 
+      // ── STATE 1: Grabbed by another player ──────────────────────────
       if (grabbedBy && lastGrabbedPosition && typeof lastGrabbedPosition.x === "number") {
         duck.position.set(lastGrabbedPosition.x, lastGrabbedPosition.y, lastGrabbedPosition.z);
         velY = 0;
         launchVel.set(0, 0, 0);
+        ragdollVel.set(0, 0, 0);
         grounded = false;
+        // Can't move, grab, or do anything while held
+        releaseHeldNPC();
+        if (held) {
+          const oid = dynamic.indexOf(held);
+          if (oid >= 0 && socket) socket.emit("drop", oid);
+          held = null;
+        }
+        if (heldPlayerId && socket) { socket.emit("releasePlayer"); heldPlayerId = null; }
+        focus.visible = false;
+        sparkleGroup.visible = false;
+
+      // ── STATE 2: Ragdoll — just been thrown, physics object ─────────
+      } else if (ragdollMode) {
+        // Object-style physics: gravity, damping, bounce off buildings/floor
+        ragdollVel.y -= GRAVITY * dt;
+        ragdollVel.multiplyScalar(0.995); // air damping (like NPC physics)
+
+        let nextPos = duck.position.clone();
+        nextPos.addScaledVector(ragdollVel, dt);
+
+        // Floor bounce
+        if (nextPos.y < DUCK_HALF.y) {
+          nextPos.y = DUCK_HALF.y;
+          if (ragdollVel.y < 0) ragdollVel.y *= -0.3; // bounce
+          ragdollVel.x *= 0.7; // floor friction
+          ragdollVel.z *= 0.7;
+        }
+
+        // Building collision (push out on smallest overlap axis)
+        const pBox = playerAABB(nextPos);
+        for (const c of colliders) {
+          if (!aabbIntersects(pBox, c)) continue;
+          const overlapX = Math.min(pBox.max.x - c.min.x, c.max.x - pBox.min.x);
+          const overlapY = Math.min(pBox.max.y - c.min.y, c.max.y - pBox.min.y);
+          const overlapZ = Math.min(pBox.max.z - c.min.z, c.max.z - pBox.min.z);
+          if (overlapY <= overlapX && overlapY <= overlapZ) {
+            if (nextPos.y > (c.min.y + c.max.y) * 0.5) nextPos.y += overlapY + 0.01;
+            else nextPos.y -= overlapY + 0.01;
+            ragdollVel.y *= -0.25;
+          } else if (overlapX <= overlapZ) {
+            if (nextPos.x > (c.min.x + c.max.x) * 0.5) nextPos.x += overlapX + 0.01;
+            else nextPos.x -= overlapX + 0.01;
+            ragdollVel.x *= -0.3;
+          } else {
+            if (nextPos.z > (c.min.z + c.max.z) * 0.5) nextPos.z += overlapZ + 0.01;
+            else nextPos.z -= overlapZ + 0.01;
+            ragdollVel.z *= -0.3;
+          }
+          // Re-check with updated position
+          pBox.min.copy(nextPos.clone().sub(DUCK_HALF));
+          pBox.max.copy(nextPos.clone().add(DUCK_HALF));
+        }
+
+        duck.position.copy(nextPos);
+
+        // Tumble wildly while ragdolling
+        tumblePitch += ragdollVel.y * dt * 0.6;
+        tumbleRoll += (ragdollVel.x - ragdollVel.z) * dt * 0.4;
+        tumblePitch = Math.max(-Math.PI, Math.min(Math.PI, tumblePitch));
+        tumbleRoll = Math.max(-Math.PI, Math.min(Math.PI, tumbleRoll));
+
+        // Exit ragdoll when on the ground and slow enough
+        const onGround = nextPos.y <= DUCK_HALF.y + 0.05;
+        const slow = ragdollVel.length() < 2.5;
+        if (onGround && slow) {
+          ragdollMode = false;
+          ragdollVel.set(0, 0, 0);
+          velY = 0;
+          launchVel.set(0, 0, 0);
+          grounded = true;
+          wasHitOrThrown = false;
+        }
+
+        // Fell off the edge while ragdolling
+        if (Math.abs(duck.position.x) > MAP_EDGE || Math.abs(duck.position.z) > MAP_EDGE || duck.position.y < -50) {
+          duck.position.set(0, startPos.y, 0);
+          ragdollMode = false;
+          ragdollVel.set(0, 0, 0);
+          velY = 0;
+          launchVel.set(0, 0, 0);
+          tumblePitch = 0;
+          tumbleRoll = 0;
+          wasHitOrThrown = false;
+          grounded = true;
+        }
+
+      // ── STATE 3: Normal player movement ─────────────────────────────
       } else {
         // Input -> movement (relative to yaw)
         const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
