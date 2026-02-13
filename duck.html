@@ -1213,6 +1213,7 @@
     const keys = new Set();
     document.addEventListener("keydown", (e) => {
       keys.add(e.code);
+      if (e.code === "KeyE" && !e.repeat) tryGrab();
       if (e.code === "Escape") document.exitPointerLock?.(); // leaves game → pointerlockchange shows pause sidebar
       if (e.code === "KeyP") setThirdPerson(!thirdPersonMode);
     });
@@ -1673,62 +1674,54 @@
       }
     }, { passive: true });
 
-    // Hold E to grab
-    function updateHolding() {
-      holding = keys.has("KeyE");
-      if (!holding) {
-        if (heldPlayerId && socket) {
-          socket.emit("releasePlayer");
+    // Single E press to grab (same as objects); release only via throw (LMB) or drop (RMB)
+    function tryGrab() {
+      if (held || heldPlayerId) return;
+      const hit = getAimHit();
+      if (!hit || !hit.object) return;
+      const obj = hit.object;
+      const otherId = obj.userData.otherPlayerId;
+      if (otherId && socket) {
+        heldPlayerId = otherId;
+        socket.emit("grabPlayer", otherId);
+        const p = otherPlayers.get(otherId);
+        if (p) {
+          holdDistance = Math.max(2, Math.min(40, new THREE.Vector3(p.x - duck.position.x, 0, p.z - duck.position.z).length()));
+          holdHeight = p.y + 2;
         }
-        heldPlayerId = null;
+        focus.visible = true;
+        playSfx("grab");
         return;
       }
-
-      if (!held && !heldPlayerId) {
-        const hit = getAimHit();
-        if (hit && hit.object) {
-          const obj = hit.object;
-          const otherId = obj.userData.otherPlayerId;
-          if (otherId && socket) {
-            heldPlayerId = otherId;
-            socket.emit("grabPlayer", otherId);
-            const p = otherPlayers.get(otherId);
-            if (p) {
-              holdDistance = Math.max(2, Math.min(40, new THREE.Vector3(p.x - duck.position.x, 0, p.z - duck.position.z).length()));
-              holdHeight = p.y + 2;
-            }
-            focus.visible = true;
-            playSfx("grab");
-          } else {
-            const npc = obj.userData.npc;
-            if (npc) {
-              held = npc.mesh;
-              held.userData.vel = npc.vel;
-              held.userData.size = DUCK_SIZE.clone();
-              held.userData.mass = 1.5;
-              held.userData.npc = npc;
-              npc.grabbed = true;
-              // Tell server this NPC is grabbed
-              const npcIdx = npcDucks.indexOf(npc);
-              if (npcIdx >= 0 && socket) socket.emit("grabNpc", npcIdx);
-            } else {
-              held = obj;
-              const objectId = dynamic.indexOf(held);
-              if (objectId >= 0 && socket) socket.emit("grab", objectId);
-            }
-            // Stop server correction from fighting our telekinesis
-            held.userData.serverTarget = null;
-            held.userData.localAuthorityUntil = null;
-            focus.visible = true;
-            const grabPos = held.parent === scene ? held.position : held.getWorldPosition(new THREE.Vector3());
-            const grabDist = grabPos.clone().sub(duck.position).length();
-            holdDistance = Math.max(2, Math.min(40, grabDist));
-            holdHeight = grabPos.y + 5;
-            held.userData.vel.y += 2.5;
-            playSfx("grab");
-          }
-        }
+      const npc = obj.userData.npc;
+      if (npc) {
+        held = npc.mesh;
+        held.userData.vel = npc.vel;
+        held.userData.size = DUCK_SIZE.clone();
+        held.userData.mass = 1.5;
+        held.userData.npc = npc;
+        npc.grabbed = true;
+        const npcIdx = npcDucks.indexOf(npc);
+        if (npcIdx >= 0 && socket) socket.emit("grabNpc", npcIdx);
+      } else {
+        held = obj;
+        const objectId = dynamic.indexOf(held);
+        if (objectId >= 0 && socket) socket.emit("grab", objectId);
       }
+      held.userData.serverTarget = null;
+      held.userData.localAuthorityUntil = null;
+      focus.visible = true;
+      const grabPos = held.parent === scene ? held.position : held.getWorldPosition(new THREE.Vector3());
+      const grabDist = grabPos.clone().sub(duck.position).length();
+      holdDistance = Math.max(2, Math.min(40, grabDist));
+      holdHeight = grabPos.y + 5;
+      held.userData.vel.y += 2.5;
+      playSfx("grab");
+    }
+
+    function updateHolding() {
+      holding = keys.has("KeyE");
+      if (!holding) return;
     }
 
     // Pull held object toward target point in front of camera
