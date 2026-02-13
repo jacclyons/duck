@@ -186,8 +186,12 @@
     #menu #roomList li { margin-bottom: 6px; }
     #menu #roomList .room-item { display: block; width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.25); color: inherit; font-size: 0.95rem; cursor: pointer; text-align: left; font-family: "Roboto Mono", monospace; font-weight: 300; }
     #menu #roomList .room-item:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.3); }
-    #menu .room-list-refresh { margin-top: 6px; padding: 6px 12px; font-size: 0.85rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: inherit; cursor: pointer; }
-    #menu .room-list-refresh:hover { background: rgba(255,255,255,0.18); }
+    #menu .room-list-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+    #menu .room-list-header h3 { margin: 0; }
+    #menu .room-list-refresh { padding: 4px; background: none; border: none; color: inherit; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+    #menu .room-list-refresh:hover { opacity: 0.85; }
+    #menu .room-list-refresh svg { width: 18px; height: 18px; transition: transform 0.35s ease; }
+    #menu .room-list-refresh:hover svg { transform: rotate(-360deg); }
     /* Pause overlay (blurred background) + sidebar */
     #pauseOverlay {
       position: fixed; inset: 0; z-index: 25;
@@ -242,9 +246,11 @@
         <button id="joinGameBtn" class="playBtn" style="background:rgba(255,255,255,0.2); color:inherit;">JOIN</button>
       </div>
       <div class="room-list-section">
-        <h3>Available rooms</h3>
+        <div class="room-list-header">
+          <h3>Available rooms</h3>
+          <button type="button" class="room-list-refresh" id="refreshRoomsBtn" title="Refresh rooms" aria-label="Refresh rooms"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+        </div>
         <ul id="roomList"></ul>
-        <button type="button" class="room-list-refresh" id="refreshRoomsBtn">Refresh</button>
       </div>
       <button id="playOfflineBtn" class="playBtn" style="margin-top:10px; background:rgba(255,255,255,0.15); color:inherit;">PLAY OFFLINE</button>
       <details class="controls-dropdown">
@@ -421,7 +427,7 @@
     // SFX
     // ---------------------------
     const sfx = {};
-    ["grab", "throw", "shatter", "scream", "scream2"].forEach((name) => {
+    ["grab", "throw", "shatter", "scream", "scream2", "bruh"].forEach((name) => {
       const a = new Audio(`sfx/${name}.mp3`);
       a.volume = 0.7;
       sfx[name] = a;
@@ -1044,6 +1050,7 @@
         grabbedBy = null;
         lastGrabbedPosition = null;
         const { vx, vy, vz } = data;
+        playSfx("bruh");
         // Enter ragdoll mode — player becomes a physics object until they land
         ragdollVel = new THREE.Vector3(vx, vy, vz);
         ragdollMode = true;
@@ -1054,6 +1061,7 @@
       });
       socket.off("hitBy").on("hitBy", (data) => {
         const { vx, vy, vz } = data;
+        playSfx("bruh");
         const hitSpeed = Math.sqrt(vx * vx + vy * vy + vz * vz);
         if (hitSpeed > 15) {
           // Big hit — go full ragdoll
@@ -2623,6 +2631,7 @@
         if (!aabbIntersects(mBox, pBox)) continue;
         const knock = m.userData.vel.clone().multiplyScalar(0.7);
         knock.y = Math.max(knock.y, 4 + mSpeed * 0.15);
+        if (!socket) playSfx("bruh");
         launchVel.add(knock);
         velY += knock.y;
         grounded = false;
@@ -2645,6 +2654,7 @@
         if (!aabbIntersects(nBox, pBox)) continue;
         const knock = npc.vel.clone().multiplyScalar(0.6);
         knock.y = Math.max(knock.y, 5 + npc.vel.length() * 0.2);
+        if (!socket) playSfx("bruh");
         launchVel.add(knock);
         velY += knock.y;
         grounded = false;
@@ -2762,8 +2772,10 @@
     // Initial hint behavior
     document.addEventListener("click", () => {
       const hint = document.getElementById("hint");
-      hint.style.opacity = "0.75";
-      setTimeout(() => hint.style.opacity = "0.95", 500);
+      if (hint) {
+        hint.style.opacity = "0.75";
+        setTimeout(() => { if (hint) hint.style.opacity = "0.95"; }, 500);
+      }
     });
 
     // Put player in a nice start spot
