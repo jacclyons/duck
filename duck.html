@@ -180,6 +180,14 @@
       background: #181818;
     }
     #menu .status { margin-top: 16px; font-size: 1rem; opacity: 0.8; }
+    #menu .room-list-section { margin-top: 14px; text-align: left; }
+    #menu .room-list-section h3 { margin: 0 0 8px; font-size: 1rem; opacity: 0.9; }
+    #menu #roomList { list-style: none; margin: 0; padding: 0; max-height: 140px; overflow-y: auto; }
+    #menu #roomList li { margin-bottom: 6px; }
+    #menu #roomList .room-item { display: block; width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.25); color: inherit; font-size: 0.95rem; cursor: pointer; text-align: left; font-family: "Roboto Mono", monospace; font-weight: 300; }
+    #menu #roomList .room-item:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.3); }
+    #menu .room-list-refresh { margin-top: 6px; padding: 6px 12px; font-size: 0.85rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: inherit; cursor: pointer; }
+    #menu .room-list-refresh:hover { background: rgba(255,255,255,0.18); }
     /* Pause overlay (blurred background) + sidebar */
     #pauseOverlay {
       position: fixed; inset: 0; z-index: 25;
@@ -232,6 +240,11 @@
       <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
         <input id="roomIdInput" type="text" placeholder="Room ID" style="flex:1; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:inherit; font-size:0.95rem;" maxlength="4" />
         <button id="joinGameBtn" class="playBtn" style="background:rgba(255,255,255,0.2); color:inherit;">JOIN</button>
+      </div>
+      <div class="room-list-section">
+        <h3>Available rooms</h3>
+        <ul id="roomList"></ul>
+        <button type="button" class="room-list-refresh" id="refreshRoomsBtn">Refresh</button>
       </div>
       <button id="playOfflineBtn" class="playBtn" style="margin-top:10px; background:rgba(255,255,255,0.15); color:inherit;">PLAY OFFLINE</button>
       <details class="controls-dropdown">
@@ -506,6 +519,63 @@
       }
       setupSocketHandlers();
       socket.emit("joinRoom", { roomId: roomIdToJoin, ducktag: myDucktag });
+    }
+
+    function fetchAndShowRooms() {
+      if (typeof io === "undefined") {
+        menuStatus.textContent = "Socket.io failed to load. Check connection.";
+        return;
+      }
+      if (!socket || !socket.connected) {
+        menuStatus.textContent = "Connecting...";
+        if (!socket) {
+          socket = io(SOCKET_SERVER_URL || undefined);
+          setupSocketHandlers();
+        }
+        socket.once("connect", () => {
+          menuStatus.textContent = "Loading rooms...";
+          socket.emit("listRooms", (list) => {
+            menuStatus.textContent = "";
+            renderRoomList(list);
+          });
+        });
+        return;
+      }
+      menuStatus.textContent = "Loading rooms...";
+      socket.emit("listRooms", (list) => {
+        menuStatus.textContent = "";
+        renderRoomList(list);
+      });
+    }
+
+    function renderRoomList(list) {
+      const ul = document.getElementById("roomList");
+      if (!ul) return;
+      ul.innerHTML = "";
+      if (!Array.isArray(list)) list = [];
+      if (list.length === 0) {
+        const li = document.createElement("li");
+        li.textContent = "No rooms yet. Create one!";
+        li.style.opacity = "0.7";
+        ul.appendChild(li);
+        return;
+      }
+      for (const { roomId: id, playerCount } of list) {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "room-item";
+        btn.textContent = id + " — " + playerCount + " player" + (playerCount !== 1 ? "s" : "");
+        btn.addEventListener("click", () => {
+          const ducktagEl = document.getElementById("ducktagInput");
+          myDucktag = (ducktagEl && ducktagEl.value.trim()) || "Ducky1234";
+          if (roomIdInput) roomIdInput.value = id;
+          menuStatus.textContent = "Joining...";
+          connectAndJoinRoom(id);
+        });
+        li.appendChild(btn);
+        ul.appendChild(li);
+      }
     }
 
     function randomRoomId() {
@@ -1111,6 +1181,11 @@
       menuStatus.textContent = "Playing offline...";
       renderer.domElement.requestPointerLock();
     });
+
+    const refreshRoomsBtn = document.getElementById("refreshRoomsBtn");
+    if (refreshRoomsBtn) {
+      refreshRoomsBtn.addEventListener("click", () => { fetchAndShowRooms(); });
+    }
 
     const copyRoomBtn = document.getElementById("copyRoomBtn");
     if (copyRoomBtn) {

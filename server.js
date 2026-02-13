@@ -490,6 +490,23 @@ setInterval(() => {
 }, 50); // 50ms = 20Hz
 
 io.on("connection", (socket) => {
+  socket.on("listRooms", (callback) => {
+    if (typeof callback !== "function") return;
+    try {
+      const list = [];
+      for (const [roomId, room] of rooms) {
+        const playerCount = room.players ? room.players.size : 0;
+        if (playerCount > 0) {
+          list.push({ roomId, playerCount });
+        }
+      }
+      callback(list);
+    } catch (err) {
+      console.error("listRooms error", err);
+      callback([]);
+    }
+  });
+
   socket.on("createRoom", (data) => {
     const ducktag = (data && data.ducktag) || "Ducky1234";
     const roomId = createRoom(socket.id, ducktag);
