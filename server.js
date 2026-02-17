@@ -30,8 +30,8 @@ app.use(express.static(path.join(__dirname)));
 
 // --- Constants (match duck.html) ---
 const WORLD_SEED = 12345;
-const GRAVITY = 28;
-const DAMPING = 0.985;
+const GRAVITY = 32;
+const DAMPING = 1.0;
 const FLOOR_Y = 0;
 const BREAK_SPEED = 55;
 const NPC_COUNT = 20;
