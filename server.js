@@ -487,7 +487,7 @@ setInterval(() => {
     };
     io.to(roomId).emit("envUpdate", payload);
   }
-}, 50); // 50ms = 20Hz
+}, 33); // 33ms ≈ 30Hz for smoother env sync
 
 io.on("connection", (socket) => {
   socket.on("listRooms", (callback) => {
@@ -809,6 +809,18 @@ io.on("connection", (socket) => {
     npc.vx *= 0.35;
     npc.vy *= 0.35;
     npc.vz *= 0.35;
+  });
+
+  socket.on("playerHitBuilding", (data) => {
+    const { buildingId } = data;
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    if (!room) return;
+    const idx = room.colliders.findIndex((c) => c.id === buildingId);
+    if (idx < 0) return;
+    room.colliders.splice(idx, 1);
+    io.to(roomId).emit("buildingDestroyed", { buildingId });
   });
 
   socket.on("resetWorld", () => {

@@ -1110,17 +1110,14 @@
             if (m === held) continue; // local player is holding this — ignore server
             // Skip correction if recently thrown/dropped (grace period)
             if (m.userData.localAuthorityUntil && now < m.userData.localAuthorityUntil) continue;
-            // Store server target for gentle correction in game loop
+            // Store server target + velocity for gentle correction in game loop
             m.userData.serverTarget = { x: o.x, y: o.y, z: o.z };
-            // Only blend velocity if object is slow (resting) — don't fight active throws
+            m.userData.serverVel = { x: o.vx || 0, y: o.vy || 0, z: o.vz || 0 };
+            // When both at rest, snap velocity so we don't drift
             const v = m.userData.vel;
             const localSpeed = v.length();
             const serverSpeed = Math.sqrt((o.vx||0)**2 + (o.vy||0)**2 + (o.vz||0)**2);
-            if (localSpeed < 3 && serverSpeed < 3) {
-              // Both at rest — snap velocity
-              v.set(o.vx || 0, o.vy || 0, o.vz || 0);
-            }
-            // If moving fast, trust local physics (server will catch up)
+            if (localSpeed < 3 && serverSpeed < 3) v.set(o.vx || 0, o.vy || 0, o.vz || 0);
           }
         }
         if (data.npcs && data.npcs.length === npcDucks.length) {
@@ -1132,6 +1129,7 @@
             // Skip NPCs with local authority (recently thrown/dropped)
             if (npc.localAuthorityUntil && now < npc.localAuthorityUntil) continue;
             npc.serverTarget = { x: n.x, y: n.y, z: n.z };
+            npc.serverVel = { x: n.vx || 0, y: n.vy || 0, z: n.vz || 0 };
           }
         }
       });
@@ -1148,7 +1146,7 @@
           npc.mesh.position.set(data.x, data.y, data.z);
           npc.vel.set(data.vx, data.vy, data.vz);
           npc.serverTarget = null;
-          npc.localAuthorityUntil = null; // let server correct after throw
+          npc.localAuthorityUntil = performance.now() + 1200; // 1.2s grace so throw isn't corrected away
         }
       });
       socket.off("npcDropped").on("npcDropped", (data) => {
@@ -1571,7 +1569,8 @@
       held.userData.vel.add(impulse);
       // Clear server target and give local authority so throw isn't rubberbanded
       held.userData.serverTarget = null;
-      held.userData.localAuthorityUntil = performance.now() + 1000; // 1s grace
+      held.userData.serverVel = null;
+      held.userData.localAuthorityUntil = performance.now() + 1500; // 1.5s grace so throw isn't corrected away
       if (isNpc) {
         const npcIdx = npcDucks.indexOf(held.userData.npc);
         if (npcIdx >= 0 && socket) {
@@ -1579,7 +1578,7 @@
           socket.emit("throwNpc", { npcIdx, x: pos.x, y: pos.y, z: pos.z, vx: impulse.x, vy: impulse.y, vz: impulse.z });
         }
         // Set local authority on the NPC so server correction doesn't fight the throw
-        held.userData.npc.localAuthorityUntil = performance.now() + 1000;
+        held.userData.npc.localAuthorityUntil = performance.now() + 1500;
       } else {
         const objectId = dynamic.indexOf(held);
         if (objectId >= 0 && socket) {
@@ -1632,6 +1631,7 @@
         } else if (held) {
           // Clear server target so drop doesn't rubberband
           held.userData.serverTarget = null;
+          held.userData.serverVel = null;
           held.userData.localAuthorityUntil = performance.now() + 500; // 0.5s grace
           if (held.userData?.npc) {
             const npcIdx = npcDucks.indexOf(held.userData.npc);
@@ -1709,6 +1709,7 @@
         if (objectId >= 0 && socket) socket.emit("grab", objectId);
       }
       held.userData.serverTarget = null;
+      held.userData.serverVel = null;
       held.userData.localAuthorityUntil = null;
       focus.visible = true;
       const grabPos = held.parent === scene ? held.position : held.getWorldPosition(new THREE.Vector3());
@@ -2248,6 +2249,20 @@
         let nextPos = duck.position.clone();
         nextPos.addScaledVector(ragdollVel, dt);
 
+        // Building destruction — thrown player can smash buildings like objects
+        if (ragdollVel.length() >= BREAK_SPEED) {
+          const pBox = playerAABB(nextPos);
+          for (const bldg of buildings) {
+            if (bldg.destroyed) continue;
+            if (!aabbIntersects(pBox, bldg.box)) continue;
+            const buildingId = bldg.id;
+            shatterBuilding(bldg, nextPos.clone(), ragdollVel.clone());
+            ragdollVel.multiplyScalar(0.4);
+            if (socket) socket.emit("playerHitBuilding", { buildingId });
+            break;
+          }
+        }
+
         // Floor bounce
         if (nextPos.y < DUCK_HALF.y) {
           nextPos.y = DUCK_HALF.y;
@@ -2428,18 +2443,21 @@
         }
       }
 
-      // Smoothly interpolate other player positions — snappy enough to feel responsive,
-      // smooth enough to hide 20Hz update jitter
+      // Smoothly interpolate other player positions — reduce rubberband when they're thrown
       if (socket && myId) {
-        const lerpPos = 1 - Math.pow(0.00001, dt); // ~0.92 at 60fps — snappy position tracking
-        const lerpRot = 1 - Math.pow(0.0001, dt);  // ~0.85 at 60fps — slightly smoother rotation
+        const baseLerpPos = 1 - Math.pow(0.00002, dt);
+        const lerpRot = 1 - Math.pow(0.0001, dt);
         for (const [pid, p] of otherPlayers) {
           const mesh = otherPlayerMeshes.get(pid);
           if (!mesh) continue;
           if (p.targetX != null) {
-            mesh.position.x += (p.targetX - mesh.position.x) * lerpPos;
-            mesh.position.y += (p.targetY - mesh.position.y) * lerpPos;
-            mesh.position.z += (p.targetZ - mesh.position.z) * lerpPos;
+            const dx = p.targetX - mesh.position.x, dy = p.targetY - mesh.position.y, dz = p.targetZ - mesh.position.z;
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            // When far behind (e.g. they were just thrown), catch up faster to avoid visible lag
+            const lerpPos = dist > 4 ? Math.min(0.35, baseLerpPos * 1.2) : baseLerpPos;
+            mesh.position.x += dx * lerpPos;
+            mesh.position.y += dy * lerpPos;
+            mesh.position.z += dz * lerpPos;
             // Keep p.x/y/z in sync so collision checks use interpolated position
             p.x = mesh.position.x;
             p.y = mesh.position.y;
@@ -2548,16 +2566,26 @@
           m.userData.vel.multiplyScalar(DAMPING);
           m.position.addScaledVector(m.userData.vel, dt);
 
-          // Gentle server correction — only when object is slow/resting, skip during local authority
+          // Gentle server correction — skip during local authority; blend vel so we don't rubberband
           const st = m.userData.serverTarget;
+          const sv = m.userData.serverVel;
           if (st && !(m.userData.localAuthorityUntil && now < m.userData.localAuthorityUntil)) {
             const drift = Math.abs(st.x - m.position.x) + Math.abs(st.y - m.position.y) + Math.abs(st.z - m.position.z);
             const speed = m.userData.vel.length();
-            // Stronger correction when at rest + big drift; minimal when moving fast
-            const correctionStrength = speed > 5 ? 0.02 : (drift > 3 ? 0.1 : 0.05);
-            m.position.x += (st.x - m.position.x) * correctionStrength;
-            m.position.y += (st.y - m.position.y) * correctionStrength;
-            m.position.z += (st.z - m.position.z) * correctionStrength;
+            // Skip correction when drift is huge (stale server state) or object is very fast
+            if (drift < 20 && speed < 25) {
+              const correctionStrength = speed > 8 ? 0.015 : (drift > 4 ? 0.08 : 0.04);
+              m.position.x += (st.x - m.position.x) * correctionStrength;
+              m.position.y += (st.y - m.position.y) * correctionStrength;
+              m.position.z += (st.z - m.position.z) * correctionStrength;
+              // Blend velocity toward server so we don't keep fighting the correction
+              if (sv) {
+                const velBlend = speed > 8 ? 0.03 : 0.08;
+                m.userData.vel.x += ((sv.x || 0) - m.userData.vel.x) * velBlend;
+                m.userData.vel.y += ((sv.y || 0) - m.userData.vel.y) * velBlend;
+                m.userData.vel.z += ((sv.z || 0) - m.userData.vel.z) * velBlend;
+              }
+            }
           }
           checkBuildingDestruction(m);
           resolveDynamicCollisions(m);
@@ -2600,13 +2628,24 @@
         // Full NPC AI + physics (same as offline) with gentle server correction
         updateNPCs(dt);
         for (const npc of npcDucks) {
+          if (npc.localAuthorityUntil && now < npc.localAuthorityUntil) continue;
           const st = npc.serverTarget;
+          const sv = npc.serverVel;
           if (st) {
             const speed = npc.vel.length();
-            const corr = speed > 5 ? 0.02 : 0.05; // light touch when moving
-            npc.mesh.position.x += (st.x - npc.mesh.position.x) * corr;
-            npc.mesh.position.y += (st.y - npc.mesh.position.y) * corr;
-            npc.mesh.position.z += (st.z - npc.mesh.position.z) * corr;
+            const drift = Math.abs(st.x - npc.mesh.position.x) + Math.abs(st.y - npc.mesh.position.y) + Math.abs(st.z - npc.mesh.position.z);
+            if (drift < 20 && speed < 25) {
+              const corr = speed > 8 ? 0.015 : 0.04;
+              npc.mesh.position.x += (st.x - npc.mesh.position.x) * corr;
+              npc.mesh.position.y += (st.y - npc.mesh.position.y) * corr;
+              npc.mesh.position.z += (st.z - npc.mesh.position.z) * corr;
+              if (sv) {
+                const velBlend = speed > 8 ? 0.03 : 0.08;
+                npc.vel.x += ((sv.x || 0) - npc.vel.x) * velBlend;
+                npc.vel.y += ((sv.y || 0) - npc.vel.y) * velBlend;
+                npc.vel.z += ((sv.z || 0) - npc.vel.z) * velBlend;
+              }
+            }
           }
         }
       }
